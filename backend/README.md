@@ -14,7 +14,7 @@ cp -n .env.example .env  # cria o arquivo se necessário e preserva o .env exist
 python -m uvicorn app.main:app --reload
 ```
 
-Com o servidor em execução, abra o [Swagger](http://localhost:8000/docs). No React, a URL-base de desenvolvimento é `http://localhost:8000`. A interface de mapa usa React-Leaflet no frontend e envia os campos `latitude` e `longitude` para a API.
+Com o servidor em execução, abra o [Swagger](https://nasa-challenge-nvrf.onrender.com/docs). No React, a URL-base de desenvolvimento é `https://nasa-challenge-nvrf.onrender.com`. A interface de mapa usa React-Leaflet no frontend e envia os campos `latitude` e `longitude` para a API.
 
 ### Ambiente
 
@@ -43,10 +43,10 @@ Com o servidor em execução, abra o [Swagger](http://localhost:8000/docs). No R
 | GET | `/api/v1/risks` | Triagem de riscos nos próximos `days` de 1 a 7 |
 
 ```bash
-curl 'http://localhost:8000/health'
-curl 'http://localhost:8000/api/v1/regions/summary?latitude=-23.5886&longitude=-48.0483'
-curl 'http://localhost:8000/api/v1/weather/forecast?latitude=-23.5886&longitude=-48.0483&days=7'
-curl 'http://localhost:8000/api/v1/climate/history?latitude=-23.5886&longitude=-48.0483&days=90'
+curl 'https://nasa-challenge-nvrf.onrender.com/health'
+curl 'https://nasa-challenge-nvrf.onrender.com/api/v1/regions/summary?latitude=-23.5886&longitude=-48.0483'
+curl 'https://nasa-challenge-nvrf.onrender.com/api/v1/weather/forecast?latitude=-23.5886&longitude=-48.0483&days=7'
+curl 'https://nasa-challenge-nvrf.onrender.com/api/v1/climate/history?latitude=-23.5886&longitude=-48.0483&days=90'
 ```
 
 Coordenadas fora da malha estadual e parâmetros inválidos retornam HTTP 422, com `detail.code` e `detail.message`. Consultas válidas retornam HTTP 200 e um status de dados como `available`, `partial`, `insufficient_data` ou `provider_error`. No resumo, cada fonte mantém seu próprio status e valores ausentes são representados por `null`.
@@ -72,7 +72,7 @@ python -m pytest -q
 A rota `/api/v1/climate/series` aceita `latitude`, `longitude`, `start_year`, `end_year`, `month`, `metric` e `group_by`. Sem filtro de anos, a janela cobre cinco anos-calendário, incluindo o atual. O intervalo informado aceita até cinco anos inclusivos. A consulta dos dias do ano corrente termina em ontem.
 
 ```bash
-curl 'http://localhost:8000/api/v1/climate/series?latitude=-23.5886&longitude=-48.0483&start_year=2022&end_year=2026&month=5&group_by=year&metric=precipitation'
+curl 'https://nasa-challenge-nvrf.onrender.com/api/v1/climate/series?latitude=-23.5886&longitude=-48.0483&start_year=2022&end_year=2026&month=5&group_by=year&metric=precipitation'
 ```
 
 Use `group_by=year` para comparar o mesmo mês entre anos, `group_by=month` para totais ou médias mensais e `group_by=day` para valores por dia. Repita `month=5&month=6` ou `metric=precipitation&metric=temperature` para selecionar mais opções. O padrão é chuva agrupada por mês. As demais métricas são `temperature`, `temperature_min`, `temperature_max`, `relative_humidity` e `wind_speed`.
@@ -86,9 +86,9 @@ Cada série retorna `period`, `unit` e valores prontos para o gráfico. A precip
 A avaliação usa as coordenadas para identificar o município pelo IBGE. Envie o mês e o ano civil do plantio. Sem um `planting_day`, o endpoint consulta os três decêndios do mês. Com o dia, consulta o decêndio correspondente.
 
 ```bash
-curl 'http://localhost:8000/api/v1/crops'
-curl 'http://localhost:8000/api/v1/crops/zarc?season_start_year=2026'
-curl 'http://localhost:8000/api/v1/crops/suitability' \
+curl 'https://nasa-challenge-nvrf.onrender.com/api/v1/crops'
+curl 'https://nasa-challenge-nvrf.onrender.com/api/v1/crops/zarc?season_start_year=2026'
+curl 'https://nasa-challenge-nvrf.onrender.com/api/v1/crops/suitability' \
   -H 'Content-Type: application/json' \
   -d '{
     "location": {"latitude": -23.5886, "longitude": -48.0483},
@@ -130,7 +130,7 @@ Para atualizar, baixe a publicação e execute o importador na pasta `backend`.
 ## Rotação de culturas
 
 ```bash
-curl 'http://localhost:8000/api/v1/crops/rotation' \
+curl 'https://nasa-challenge-nvrf.onrender.com/api/v1/crops/rotation' \
   -H 'Content-Type: application/json' \
   -d '{
     "location": {"latitude": -23.5886, "longitude": -48.0483},
@@ -148,7 +148,7 @@ Com `previous_planting_date`, o serviço consegue identificar uma possível suce
 ## AgroSat IA
 
 ```bash
-curl 'http://localhost:8000/api/v1/ai/chat' \
+curl 'https://nasa-challenge-nvrf.onrender.com/api/v1/ai/chat' \
   -H 'Content-Type: application/json' \
   -d '{
     "message": "Qual a altitude do ponto selecionado?",
