@@ -9,6 +9,7 @@ import {
   type SuitabilityResponse,
   type RotationResponse,
   type ChatResponse,
+  type OpenMeteoRawPayload,
   summaryView,
   historyView,
   forecastView,
@@ -18,19 +19,72 @@ import {
   suitabilityView,
   rotationView,
   chatView,
+  openMeteoToForecast,
+  openMeteoToSummary,
+  openMeteoToRisks,
 } from "./fastapi";
 import municipalities from "@/data/sp-municipalities.json";
 
 const DEFAULT_API_BASE_URL = "https://nasa-challenge-nvrf.onrender.com";
+const OPEN_METEO_URLS = [
+  "https://api.open-meteo.com/v1/forecast",
+  "https://historical-forecast-api.open-meteo.com/v1/forecast",
+];
 
-export const API_CONFIGURED = Boolean(import.meta.env["VITE_API_BASE_URL"] || DEFAULT_API_BASE_URL);
+const openMeteoCache = new Map<string, { expiresAt: number; promise: Promise<OpenMeteoRawPayload> }>();
+
+async function fetchOpenMeteoDirect(p: Location, days = 7): Promise<OpenMeteoRawPayload> {
+  const key = `${p.lat.toFixed(4)},${p.lon.toFixed(4)},${days}`;
+  const now = Date.now();
+  const cached = openMeteoCache.get(key);
+  if (cached && cached.expiresAt > now) return cached.promise;
+
+  const params = new URLSearchParams({
+    latitude: String(p.lat),
+    longitude: String(p.lon),
+    timezone: "America/Sao_Paulo",
+    forecast_days: String(days),
+    temperature_unit: "celsius",
+    wind_speed_unit: "kmh",
+    precipitation_unit: "mm",
+    current:
+      "temperature_2m,relative_humidity_2m,precipitation,wind_speed_10m,wind_gusts_10m,soil_moisture_0_to_1cm,soil_moisture_1_to_3cm,soil_moisture_3_to_9cm",
+    daily:
+      "temperature_2m_min,temperature_2m_max,temperature_2m_mean,relative_humidity_2m_mean,precipitation_sum,precipitation_probability_max,wind_speed_10m_max,wind_gusts_10m_max,et0_fao_evapotranspiration",
+  });
+
+  const promise = (async () => {
+    for (const baseUrl of OPEN_METEO_URLS) {
+      try {
+        const res = await fetch(`${baseUrl}?${params}`, { signal: AbortSignal.timeout(15000) });
+        if (!res.ok) continue;
+        const json = (await res.json()) as OpenMeteoRawPayload & { error?: boolean };
+        if (json && !json.error && (json.daily || json.current)) return json;
+      } catch {
+        continue;
+      }
+    }
+    throw new Error("A previsão do Open-Meteo está temporariamente indisponível.");
+  })();
+
+  openMeteoCache.set(key, { expiresAt: now + 300_000, promise });
+  promise.catch(() => openMeteoCache.delete(key));
+  return promise;
+}
+
+export const API_CONFIGURED = Boolean(
+  import.meta.env["VITE_API_BASE_URL"] || import.meta.env["VITE_API_URL"] || DEFAULT_API_BASE_URL,
+);
 
 async function request<T>(
   path: string,
   params?: Record<string, string | number>,
   body?: unknown,
 ): Promise<T> {
-  const base = import.meta.env["VITE_API_BASE_URL"] || DEFAULT_API_BASE_URL;
+  const base =
+    import.meta.env["VITE_API_BASE_URL"] ||
+    import.meta.env["VITE_API_URL"] ||
+    DEFAULT_API_BASE_URL;
   if (!base) throw new Error("O serviço de dados ainda não está conectado.");
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params ?? {})) query.set(key, String(value));
@@ -62,8 +116,21 @@ function planting(body: FarmRequest) {
 }
 
 export const api = {
-  summary: (p: Location) =>
-    request<SummaryResponse>("/api/v1/regions/summary", coords(p)).then(summaryView),
+  summary: async (p: Location) => {
+    const data = await request<SummaryResponse>("/api/v1/regions/summary", coords(p)).catch(
+      () => null,
+    );
+    if (!data || data.weather?.status === "provider_error") {
+      try {
+        const raw = await fetchOpenMeteoDirect(p);
+        return summaryView(openMeteoToSummary(raw));
+      } catch {
+        if (data) return summaryView(data);
+        throw new Error("Não foi possível obter o resumo da região.");
+      }
+    }
+    return summaryView(data);
+  },
   history: (p: Location, days: number) =>
     request<HistoryResponse>("/api/v1/climate/history", { ...coords(p), days }).then(historyView),
   series: (p: Location, startYear: number, endYear: number, month: number, metric: string) =>
@@ -75,13 +142,37 @@ export const api = {
       metric,
       group_by: "month",
     }),
-  forecast: (p: Location) =>
-    request<ForecastResponse>("/api/v1/weather/forecast", coords(p)).then(forecastView),
-  risks: (p: Location, cropId?: string) =>
-    request<RisksResponse>("/api/v1/risks", {
+  forecast: async (p: Location) => {
+    const data = await request<ForecastResponse>("/api/v1/weather/forecast", coords(p)).catch(
+      () => null,
+    );
+    if (!data || data.status === "provider_error" || !data.daily?.length) {
+      try {
+        const raw = await fetchOpenMeteoDirect(p);
+        return forecastView(openMeteoToForecast(raw));
+      } catch {
+        if (data) return forecastView(data);
+        throw new Error("A previsão do Open-Meteo está temporariamente indisponível.");
+      }
+    }
+    return forecastView(data);
+  },
+  risks: async (p: Location, cropId?: string) => {
+    const data = await request<RisksResponse>("/api/v1/risks", {
       ...coords(p),
       ...(cropId ? { crop_id: cropId } : {}),
-    }).then(risksView),
+    }).catch(() => null);
+    if (!data || data.status === "provider_error" || !data.period_start) {
+      try {
+        const raw = await fetchOpenMeteoDirect(p);
+        return risksView(openMeteoToRisks(raw, cropId));
+      } catch {
+        if (data) return risksView(data);
+        throw new Error("Não foi possível obter os riscos agroambientais.");
+      }
+    }
+    return risksView(data);
+  },
   soil: (p: Location) => request<SoilResponse>("/api/v1/soil", coords(p)).then(soilView),
   terrain: (p: Location) =>
     request<TerrainResponse>("/api/v1/terrain", coords(p)).then(terrainView),

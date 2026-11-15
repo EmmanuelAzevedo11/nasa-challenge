@@ -31,6 +31,7 @@ def create_app(
             http = await stack.enter_async_context(httpx.AsyncClient(
                 transport=transport,
                 timeout=settings.http_timeout_seconds,
+                headers={"User-Agent": "AgroSat-SP/0.5.0 (+https://nasa-challenge-nvrf.onrender.com)"},
                 limits=httpx.Limits(max_connections=32, max_keepalive_connections=16),
             ))
             app.state.services = Services(

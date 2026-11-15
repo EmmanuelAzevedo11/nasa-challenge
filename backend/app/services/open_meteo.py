@@ -124,24 +124,33 @@ async def get_weather_forecast(
         "current": ",".join([*(field[0] for field in CURRENT.values()), *SOIL_DEPTHS]),
         "daily": ",".join(field[0] for field in DAILY.values()),
     }
-    try:
-        return await client.get(
-            SOURCE,
-            f"{str(settings.open_meteo_base_url).rstrip('/')}/v1/forecast",
-            params,
-            settings.cache_ttl_seconds,
-            lambda payload: parse_forecast(payload, location, days),
-        )
-    except ProviderError:
-        return WeatherForecast(
-            location=location,
-            status="provider_error",
-            message="A previsão do Open-Meteo está temporariamente indisponível.",
-            requested_days=days,
-            current=parse_current({}, {}, "provider_error"),
-            daily_metrics=daily_metrics({}),
-            limitations=LIMITATIONS,
-        )
+    base_urls = [str(settings.open_meteo_base_url).rstrip("/")]
+    if settings.app_env != "test":
+        fallback_url = str(settings.open_meteo_fallback_base_url).rstrip("/")
+        if fallback_url and fallback_url not in base_urls:
+            base_urls.append(fallback_url)
+
+    for base_url in base_urls:
+        try:
+            return await client.get(
+                SOURCE,
+                f"{base_url}/v1/forecast",
+                params,
+                settings.cache_ttl_seconds,
+                lambda payload: parse_forecast(payload, location, days),
+            )
+        except ProviderError:
+            continue
+
+    return WeatherForecast(
+        location=location,
+        status="provider_error",
+        message="A previsão do Open-Meteo está temporariamente indisponível.",
+        requested_days=days,
+        current=parse_current({}, {}, "provider_error"),
+        daily_metrics=daily_metrics({}),
+        limitations=LIMITATIONS,
+    )
 
 
 def parse_forecast(payload: dict, location: Location, days: int) -> WeatherForecast:
