@@ -84,7 +84,7 @@ def test_catalog_and_zarc_coverage(make_client, zarc_directory):
         catalog = client.get("/api/v1/crops").json()
         coverage = client.get("/api/v1/crops/zarc", params={"season_start_year": 2026}).json()
         empty = client.get("/api/v1/crops/zarc", params={"season_start_year": 2027}).json()
-    assert {crop["id"] for crop in catalog} == {"soybean", "corn", "sorghum", "oat", "sunn_hemp"}
+    assert {crop["id"] for crop in catalog} == {"soybean", "corn", "sorghum", "oat", "sunn_hemp", "sugarcane"}
     assert all(crop["references"] for crop in catalog)
     assert coverage["status"] == "available"
     assert coverage["available_seasons"] == ["2026/2027"]
@@ -200,11 +200,15 @@ def test_calendar_year_and_leap_year():
 def test_bad_import_leaves_previous_snapshot_intact(zarc_directory, official_format):
     snapshot = zarc_directory / "2026-2027.csv.gz"
     before = snapshot.read_bytes()
+    database, = (zarc_directory / ".index").glob("*.sqlite3")
+    indexed = database.read_bytes()
     official_format.write_text("invalid\n", encoding="utf-8")
     with pytest.raises(ValueError, match="Cabeçalho ZARC inválido"):
         import_csv(official_format, zarc_directory, 2026)
     assert snapshot.read_bytes() == before
-    assert list(zarc_directory.iterdir()) == [snapshot]
+    assert list(zarc_directory.glob("*.csv.gz")) == [snapshot]
+    assert database.read_bytes() == indexed
+    assert list(database.parent.iterdir()) == [database]
 
 
 def test_rotation_uses_zarc_window_and_distinguishes_succession(make_client, zarc_directory):
@@ -228,3 +232,65 @@ def test_rotation_rejects_unknown_previous_crop_without_provider_call(make_clien
         response = client.post("/api/v1/crops/rotation", json=plan(previous_crop="invalid", objective="diversification"))
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "unknown_crop"
+
+
+@pytest.mark.parametrize(("name", "expected_id", "expected_name"), [
+    ("  MILHO  ", "corn", "Milho"),
+    ("Feijão", None, "Feijão"),
+])
+def test_rotation_accepts_typed_name_and_keeps_exact_dates(
+    make_client, zarc_directory, name, expected_id, expected_name
+):
+    body = plan(
+        previous_crop_name=name, objective="soil_conservation", previous_planting_date="2026-10-02",
+        planting_day=5, zarc_conditions={"soil_code": 14, "cultivar_group_code": 20, "management_code": 1},
+    )
+    with make_client(nasa_month, zarc_directory) as client:
+        response = client.post("/api/v1/crops/rotation", json=body)
+
+    assert response.status_code == 200
+    strategy, = response.json()["strategies"]
+    previous, candidate = strategy["sequence"]
+    assert (previous["crop_id"], previous["name"], previous["planting_day"]) == (
+        expected_id, expected_name, 2
+    )
+    assert (candidate["crop_id"], candidate["planting_day"]) == ("soybean", 5)
+    if expected_id is None:
+        assert previous["family"] is None
+        assert "Alternância entre famílias botânicas." not in strategy["benefits"]
+        assert any("fora do catálogo" in item for item in strategy["restrictions"])
+
+
+def test_sugarcane_uses_without_season_source_and_publication_date(make_client, tmp_path, official_format):
+    with official_format.open(encoding="utf-8-sig", newline="") as stream:
+        reader = csv.DictReader(stream, delimiter=";")
+        row = next(reader)
+        columns = reader.fieldnames
+    row.update(
+        Nome_cultura="Cana-de-Açúcar (açúcar e álcool)", SafraIni="", SafraFin="PERENE",
+        Portaria="Port.04_de_26-01-2026", dec3="20",
+    )
+    with official_format.open("w", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=columns, delimiter=";")
+        writer.writeheader()
+        writer.writerow(row)
+
+    directory = tmp_path / "zarc"
+    snapshot, count = import_csv(official_format, directory, None)
+    assert (snapshot.name, count) == ("sem-safra.csv.gz", 1)
+    with make_client(nasa_month, directory) as client:
+        def sugarcane(day):
+            response = client.post("/api/v1/crops/suitability", json=plan(
+                planting_month=1, planting_day=day, planting_year=2026,
+            ))
+            assert response.status_code == 200
+            return next(item for item in response.json()["alternatives"] if item["crop_id"] == "sugarcane")
+
+        before, after = sugarcane(25), sugarcane(26)
+
+    assert before["zarc"]["status"] == "before_publication"
+    assert after["zarc"]["status"] == "available"
+    assert after["zarc"]["season"] is None
+    scenario, = after["zarc"]["scenarios"]
+    period, = scenario["periods"]
+    assert (period["start_on"], period["risk_percent"]) == ("2026-01-26", 20)

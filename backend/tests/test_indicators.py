@@ -59,3 +59,15 @@ def test_risks_use_units_and_prefer_explicit_hazard_on_partial_forecast(make_cli
     assert risks["heavy_rain"]["level"] == "moderate"
     assert risks["strong_wind"]["level"] == "high"
     assert risks["heat"]["level"] == "insufficient_data"
+
+
+def test_sugarcane_heat_uses_forecast_and_crop_reference(make_client, forecast_payload):
+    forecast_payload["daily"]["temperature_2m_max"][0] = 36
+    with make_client(lambda _: httpx.Response(200, json=forecast_payload)) as client:
+        response = client.get("/api/v1/risks", params={**ITAPETININGA, "days": 2, "crop_id": "sugarcane"})
+    assert response.status_code == 200
+    heat = next(item for item in response.json()["indicators"] if item["type"] == "heat")
+    assert heat["level"] == "high"
+    assert heat["values"]["temperature_max"] == 36
+    assert "35 °C" in heat["justification"]
+    assert "agrometeorologia_dos_cultivos.pdf" in heat["criteria_url"]

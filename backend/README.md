@@ -32,6 +32,7 @@ Com o servidor em execução, abra o [Swagger](http://localhost:8000/docs). No R
 | GET | `/api/v1/regions/summary` | Município, estimativas atuais e 30 dias de histórico solicitado |
 | GET | `/api/v1/weather/forecast` | Estimativas atuais e previsão diária. `days` aceita 1 a 16, incluindo hoje, e tem padrão 7 |
 | GET | `/api/v1/climate/history` | Histórico diário. `days` aceita 30, 90, 180 ou 365 e tem padrão 30 |
+| GET | `/api/v1/climate/series` | Séries diárias, mensais ou anuais com filtros de mês e até cinco anos de dados |
 | GET | `/api/v1/crops` | Catálogo agronômico com referências |
 | GET | `/api/v1/crops/zarc?season_start_year=2026` | Safras locais, municípios e culturas/modalidades da safra selecionada |
 | POST | `/api/v1/crops/suitability` | Avaliação regional de alternativas de plantio por período e cenário |
@@ -66,6 +67,20 @@ As fontes em grade descrevem condições regionais. Para decisões agronômicas 
 python -m pytest -q
 ```
 
+## Séries climáticas para gráficos
+
+A rota `/api/v1/climate/series` aceita `latitude`, `longitude`, `start_year`, `end_year`, `month`, `metric` e `group_by`. Sem filtro de anos, a janela cobre cinco anos-calendário, incluindo o atual. O intervalo informado aceita até cinco anos inclusivos. A consulta dos dias do ano corrente termina em ontem.
+
+```bash
+curl 'http://localhost:8000/api/v1/climate/series?latitude=-23.5886&longitude=-48.0483&start_year=2022&end_year=2026&month=5&group_by=year&metric=precipitation'
+```
+
+Use `group_by=year` para comparar o mesmo mês entre anos, `group_by=month` para totais ou médias mensais e `group_by=day` para valores por dia. Repita `month=5&month=6` ou `metric=precipitation&metric=temperature` para selecionar mais opções. O padrão é chuva agrupada por mês. As demais métricas são `temperature`, `temperature_min`, `temperature_max`, `relative_humidity` e `wind_speed`.
+
+Cada série retorna `period`, `unit` e valores prontos para o gráfico. A precipitação é somada em milímetros. Temperaturas mínimas e máximas usam os extremos das mínimas e máximas diárias, e temperatura média, umidade relativa e vento usam a média dos valores diários. Para um agrupamento anual com meses selecionados, somente os dias desses meses entram no cálculo.
+
+`days_available` e `days_expected` indicam a cobertura de cada ponto. Quando faltar qualquer dia, `value` fica nulo e `partial_value` traz o cálculo dos dias disponíveis, se houver. Um mês em andamento segue essa mesma regra. Meses que ainda não começaram ficam fora da resposta mensal. Os filtros e as agregações usam o cache do mesmo intervalo consultado na NASA POWER.
+
 ## Planejamento agrícola
 
 A avaliação usa as coordenadas para identificar o município pelo IBGE. Envie o mês e o ano civil do plantio. Sem um `planting_day`, o endpoint consulta os três decêndios do mês. Com o dia, consulta o decêndio correspondente.
@@ -96,15 +111,21 @@ curl 'http://localhost:8000/api/v1/crops/suitability' \
 
 ### Base local e atualização
 
-O backend inclui a safra **2026/2027**, com **163.005 registros** de **645 municípios** paulistas em `app/data/zarc/2026-2027.csv.gz`. O arquivo é um recorte estadual do CSV de 13/11/2026 do MAPA, sob licença Creative Commons Attribution. Os registros da fonte ficam disponíveis por município, safra e cultura em memória. [CSV oficial da safra 2026/2027](https://dados.agricultura.gov.br/dataset/tabua-de-risco-zoneamento-agricola-de-risco-climatico/resource/139e5a60-1f43-4cc8-aeab-a35dbbf816c0).
+O backend inclui dois recortes estaduais de CSVs do MAPA de 13/11/2026, sob licença Creative Commons Attribution.
 
-Para atualizar ou importar outra safra, baixe o CSV no Portal de Dados Abertos do MAPA e, na pasta `backend`, execute o importador com o ano inicial da safra e o caminho do arquivo.
+- `app/data/zarc/2026-2027.csv.gz` reúne 163.005 registros da safra 2026/2027 em 645 municípios. [Tábua de risco da safra 2026/2027](https://dados.agricultura.gov.br/dataset/tabua-de-risco-zoneamento-agricola-de-risco-climatico/resource/139e5a60-1f43-4cc8-aeab-a35dbbf816c0).
+- `app/data/zarc/sem-safra.csv.gz` reúne 369.418 registros paulistas da tábua de perenes, olerícolas e culturas sem safra. A cana-de-açúcar tem 7.079 registros, distribuídos pelas modalidades de sequeiro das portarias 4 e 5 de 2026. [Tábua de risco sem safra](https://dados.agricultura.gov.br/dataset/tabua-de-risco-zoneamento-agricola-de-risco-climatico/resource/dae65d31-683f-4ac4-ab90-3abd0c1583ba).
+
+O importador valida os registros e prepara índices SQLite locais em `app/data/zarc/.index/`. A API reusa os índices persistidos e consulta pelo município e pela cultura. Ela gera os índices quando ausentes ou desatualizados. A pasta dos dados precisa aceitar gravação para criá-los. Uma cultura nova pode reutilizar os registros importados ao receber no catálogo os nomes oficiais das modalidades e, quando aplicável, `zarc_without_season: true`.
+
+Para atualizar, baixe a publicação e execute o importador na pasta `backend`.
 
 ```bash
 .venv/bin/python -m app.services.zarc ~/Downloads/dados-abertos-tabua-de-risco-safra-2026-2027.csv --safra-inicio 2026
+.venv/bin/python -m app.services.zarc ~/Downloads/dados-abertos-tabua-de-risco-safra-perene-olericola-sem-safra.csv --sem-safra
 ```
 
-O importador valida as colunas oficiais, filtra São Paulo e substitui a versão anterior após validar o arquivo novo. `ZARC_DATA_DIR` permite configurar o diretório dos arquivos `AAAA-AAAA.csv.gz` ou `AAAA-AAAA.csv`. Mantenha um arquivo por safra e reinicie o servidor para recarregar os dados.
+`ZARC_DATA_DIR` configura o diretório dos recortes. Reinicie o servidor após importar. Para culturas sem safra, a avaliação considera a data de publicação registrada na portaria e retorna `zarc.season: null` na análise. O endpoint de cobertura por safra continua descrevendo a tábua anual selecionada.
 
 ## Rotação de culturas
 
@@ -120,7 +141,7 @@ curl 'http://localhost:8000/api/v1/crops/rotation' \
   }'
 ```
 
-Use o identificador da cultura anterior retornado pelo catálogo. Os objetivos são `soil_conservation`, `diversification`, `grain_production` e `risk_reduction`. O endpoint usa a avaliação de plantio e mantém as condições de cada janela oficial. Selecione solo, cultivar e manejo com `zarc_conditions` quando conhecidos.
+Use o identificador da cultura anterior em `previous_crop` ou digite o nome em `previous_crop_name`. Para nomes fora do catálogo, o serviço informa que a família botânica e a compatibilidade da sequência precisam ser verificadas. Os objetivos são `soil_conservation`, `diversification`, `grain_production` e `risk_reduction`. O endpoint usa a avaliação de plantio e mantém as condições de cada janela oficial. Selecione solo, cultivar e manejo com `zarc_conditions` quando conhecidos.
 
 Com `previous_planting_date`, o serviço consegue identificar uma possível sucessão dentro da safra ou uma candidata a rotação entre anos na mesma época. O uso como cultura de cobertura aparece com a finalidade e as restrições a validar. Quando a data anterior falta, a sequência fica marcada para validação. A ordenação considera o objetivo, a alternância de famílias botânicas, a classificação regional e o menor nível de risco nos cenários retornados. Confirme colheita, janela e manejo antes de decidir. [Manual de Sistema Plantio Direto da Embrapa](https://www.infoteca.cnptia.embrapa.br/infoteca/bitstream/doc/98258/1/500perguntassistemaplantiodireto.pdf).
 
@@ -146,4 +167,4 @@ Em todos os endpoints abaixo, informe `latitude` e `longitude` de um ponto pauli
 
 - **Altitude** consulta a grade `srtm90m` do Open Topo Data. [Documentação do SRTM](https://www.opentopodata.org/datasets/srtm/).
 - **Solo** usa o WCS do SoilGrids para consultar pH em água, argila, areia, silte e carbono orgânico na camada de 0 a 5 cm. Cada valor é uma estimativa espacial. Uma célula sem cobertura retorna `null`. [WCS do SoilGrids](https://docs.isric.org/globaldata/soilgrids/wcs.html).
-- **Riscos** usa previsões do Open-Meteo para geada, chuva intensa e vento forte, com critérios de triagem inspirados nos limites do INMET. O calor depende da cultura escolhida por `crop_id` e tem referências para soja e milho. O sinal de déficit hídrico usa chuva menos ET₀ em pelo menos cinco dias completos e a estimativa de umidade de 3 a 9 cm. Os indicadores servem como triagem regional. Para avisos oficiais, consulte o INMET. [Guia de alertas e critérios do INMET](https://www.gov.br/mdr/pt-br/centrais-de-conteudo/publicacoes/protecao-e-defesa-civil-sedec/guiapraticodesastres.pdf).
+- **Riscos** usa previsões do Open-Meteo para geada, chuva intensa e vento forte, com critérios de triagem inspirados nos limites do INMET. O calor depende da cultura escolhida por `crop_id` e tem referências para soja, milho e cana-de-açúcar. Para cana-de-açúcar, a triagem sinaliza a máxima diária prevista acima de 35 °C, com base no capítulo de Fábio R. Marin em *Agrometeorologia dos cultivos*. O sinal de déficit hídrico usa chuva menos ET₀ em pelo menos cinco dias completos e a estimativa de umidade de 3 a 9 cm. Os indicadores servem como triagem regional. Para avisos oficiais, consulte o INMET. [Guia de alertas e critérios do INMET](https://www.gov.br/mdr/pt-br/centrais-de-conteudo/publicacoes/protecao-e-defesa-civil-sedec/guiapraticodesastres.pdf).

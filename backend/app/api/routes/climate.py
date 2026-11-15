@@ -3,7 +3,9 @@ from typing import Annotated
 from fastapi import APIRouter, Query
 
 from app.api.dependencies import LocationDependency, ServiceDependency
+from app.schemas.climate_series import ClimateSeriesFilters, ClimateSeriesResponse
 from app.schemas.environmental import ClimateHistory, HistoryDays
+from app.services.climate_series import get_climate_series
 from app.services.nasa_power import get_climate_history
 
 router = APIRouter(prefix="/climate", tags=["Histórico climático"])
@@ -16,3 +18,12 @@ async def history(
     days: Annotated[HistoryDays, Query(description="Janela em dias até ontem.")] = HistoryDays.MONTH,
 ) -> ClimateHistory:
     return await get_climate_history(services.client, services.settings, location, days)
+
+
+@router.get("/series", summary="Consultar séries climáticas para gráficos")
+async def series(
+    location: LocationDependency,
+    services: ServiceDependency,
+    filters: Annotated[ClimateSeriesFilters, Query()],
+) -> ClimateSeriesResponse:
+    return await get_climate_series(services.client, services.settings, location, filters)

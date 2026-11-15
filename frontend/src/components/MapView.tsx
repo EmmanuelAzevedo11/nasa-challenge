@@ -1,0 +1,14 @@
+import { useEffect, useRef } from 'react';
+import L from 'leaflet';
+import type { Place } from '@/lib/climate';
+import { SP_BOUNDS } from '@/lib/climate';
+import boundary from '@/data/sp-boundary.json';
+import type { MultiPolygon } from 'geojson';
+const LAYERS={satellite:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',map:'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'};
+export default function MapView({place,layer,onPick}:{place:Place;layer:'satellite'|'map';onPick:(p:Place)=>void}){
+ const el=useRef<HTMLDivElement>(null),map=useRef<L.Map|null>(null),tiles=useRef<L.TileLayer|null>(null),marker=useRef<L.CircleMarker|null>(null),pick=useRef(onPick);pick.current=onPick;
+ useEffect(()=>{if(!el.current)return;const m=L.map(el.current,{zoomControl:false,minZoom:5,maxBounds:L.latLngBounds(SP_BOUNDS).pad(0.6)}).fitBounds(SP_BOUNDS,{padding:[30,30]});L.control.zoom({position:'bottomleft'}).addTo(m);L.geoJSON(boundary as MultiPolygon,{style:{color:'var(--agriculture)',weight:2,fill:false}}).addTo(m);m.on('click',e=>pick.current({lat:e.latlng.lat,lon:e.latlng.lng,name:`${e.latlng.lat.toFixed(4)}, ${e.latlng.lng.toFixed(4)}`}));map.current=m;const resize=new ResizeObserver(()=>m.invalidateSize());resize.observe(el.current);return()=>{resize.disconnect();m.remove();map.current=null;};},[]);
+ useEffect(()=>{if(!map.current)return;tiles.current?.remove();tiles.current=L.tileLayer(LAYERS[layer],{attribution:layer==='satellite'?'Tiles © Esri — Source: Esri, Maxar, Earthstar Geographics':'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',maxZoom:19}).addTo(map.current);},[layer]);
+ useEffect(()=>{if(!map.current)return;marker.current?.remove();marker.current=L.circleMarker([place.lat,place.lon],{radius:9,weight:3,className:'map-marker',fillOpacity:1}).addTo(map.current).bindTooltip(place.name);map.current.panTo([place.lat,place.lon]);},[place]);
+ return <div ref={el} className="absolute inset-0 z-0" aria-label="Mapa de São Paulo"/>;
+}

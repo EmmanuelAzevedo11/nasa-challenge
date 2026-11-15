@@ -1,0 +1,138 @@
+from datetime import date, datetime, timedelta
+
+import httpx
+import pytest
+
+from app.services import climate_series
+from conftest import ITAPETININGA
+
+ROUTE = "/api/v1/climate/series"
+
+
+@pytest.fixture(autouse=True)
+def freeze_date(monkeypatch):
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 15, tzinfo=tz)
+
+    monkeypatch.setattr(climate_series, "datetime", FixedDatetime)
+
+
+def test_compares_may_and_preserves_precipitation_gaps(make_client):
+    def nasa(request):
+        assert request.url.params["start"] == "20240101"
+        assert request.url.params["end"] == "20261114"
+        rain = {
+            f"{year}05{day:02}": daily
+            for year, daily in ((2024, 2), (2025, 0), (2026, 4))
+            for day in range(1, 32)
+        }
+        rain["20260531"] = -999
+        return httpx.Response(200, json={
+            "header": {"fill_value": -999},
+            "parameters": {"PRECTOTCORR": {"units": "mm/day"}},
+            "properties": {"parameter": {"PRECTOTCORR": rain}},
+        })
+
+    with make_client(nasa) as client:
+        response = client.get(ROUTE, params={
+            **ITAPETININGA, "start_year": 2024, "end_year": 2026, "month": 5, "group_by": "year",
+        })
+    assert response.status_code == 200
+    result = response.json()
+    assert result["status"] == "partial"
+    assert result["months"] == [5]
+    series, = result["series"]
+    assert (series["metric"], series["unit"], series["aggregation"]) == ("precipitation", "mm", "sum")
+    current = series["points"]
+    assert [point["period"] for point in current] == ["2024", "2025", "2026"]
+    assert [point["value"] for point in current] == [62, 0, None]
+    assert current[-1] == {
+        "period": "2026", "start_date": "2026-05-01", "end_date": "2026-05-31",
+        "days_expected": 31, "days_available": 30, "value": None,
+        "partial_value": 120, "status": "partial",
+    }
+
+
+def test_different_chart_filters_reuse_provider_data_and_support_leap_day(make_client):
+    calls = 0
+
+    def nasa(request):
+        nonlocal calls
+        calls += 1
+        assert (request.url.params["start"], request.url.params["end"]) == ("20240101", "20241231")
+        february = [(date(2024, 2, 1) + timedelta(days=offset)).strftime("%Y%m%d") for offset in range(29)]
+        return httpx.Response(200, json={"properties": {"parameter": {
+            "PRECTOTCORR": dict.fromkeys(february, 1.5),
+            "T2M": {day: 20 + index for index, day in enumerate(february)},
+            "T2M_MIN": {day: 10 + index for index, day in enumerate(february)},
+            "T2M_MAX": {day: 25 + index for index, day in enumerate(february)},
+        }}})
+
+    params = {**ITAPETININGA, "start_year": 2024, "end_year": 2024, "month": 2}
+    with make_client(nasa) as client:
+        monthly = client.get(ROUTE, params=params).raise_for_status().json()
+        daily = client.get(ROUTE, params={**params, "group_by": "day"}).raise_for_status().json()
+        multiple = client.get(ROUTE, params={
+            **params, "metric": ["temperature", "temperature_min", "temperature_max"],
+        }).raise_for_status().json()
+    assert calls == 1
+    assert monthly["series"][0]["points"][0]["value"] == 43.5
+    assert len(daily["series"][0]["points"]) == 29
+    assert daily["series"][0]["points"][-1]["period"] == "2024-02-29"
+    assert [(series["aggregation"], series["points"][0]["value"]) for series in multiple["series"]] == [
+        ("mean", 34), ("min", 10), ("max", 53),
+    ]
+
+
+def test_open_month_and_repeated_month_filters(make_client):
+    def nasa(request):
+        assert request.url.params["end"] == "20261114"
+        return httpx.Response(200, json={"properties": {"parameter": {
+            "PRECTOTCORR": {f"202611{day:02}": 1 for day in range(1, 15)},
+        }}})
+
+    with make_client(nasa) as client:
+        response = client.get(ROUTE, params={
+            **ITAPETININGA, "start_year": 2026, "end_year": 2026, "month": [11, 12],
+        }).raise_for_status().json()
+    assert response["months"] == [11, 12]
+    assert response["queried_through"] == "2026-11-14"
+    point, = response["series"][0]["points"]
+    assert (point["period"], point["days_expected"], point["days_available"]) == ("2026-11", 30, 14)
+    assert point["value"] is None and point["partial_value"] == 14
+
+
+def test_empty_future_month_does_not_call_provider(make_client):
+    with make_client(lambda _: pytest.fail("Chamada externa inesperada.")) as client:
+        response = client.get(ROUTE, params={
+            **ITAPETININGA, "start_year": 2026, "end_year": 2026, "month": 12,
+        }).raise_for_status().json()
+    assert response["status"] == "insufficient_data"
+    assert response["series"][0]["points"] == []
+
+
+def test_series_uses_five_calendar_years_and_marks_provider_failure(make_client):
+    def nasa(request):
+        assert request.url.params["start"] == "20220101"
+        return httpx.Response(429)
+
+    with make_client(nasa) as client:
+        response = client.get(ROUTE, params={**ITAPETININGA, "group_by": "year"}).raise_for_status().json()
+    assert response["status"] == "provider_error"
+    points = response["series"][0]["points"]
+    assert [point["period"] for point in points] == ["2022", "2023", "2024", "2025", "2026"]
+    assert all(point["value"] is None and point["status"] == "provider_error" for point in points)
+
+
+@pytest.mark.parametrize("filters", [
+    {"start_year": 2021, "end_year": 2026},
+    {"start_year": 2026, "end_year": 2025},
+    {"end_year": 2027},
+    {"month": 13},
+    {"metric": "invalid"},
+])
+def test_invalid_filters_do_not_call_provider(make_client, filters):
+    with make_client(lambda _: pytest.fail("Chamada externa inesperada.")) as client:
+        assert client.get(ROUTE, params={**ITAPETININGA, **filters}).status_code == 422

@@ -1,0 +1,7 @@
+import booleanPointInPolygon from '@turf/boolean-point-in-polygon';
+import boundary from '@/data/sp-boundary.json';
+import type { MultiPolygon } from 'geojson';
+export type Place = { lat: number; lon: number; name: string };
+export const DEFAULT_PLACE: Place = { lat: -22.9056, lon: -47.0608, name: 'Campinas, SP' };
+export const SP_BOUNDS: [[number, number], [number, number]] = [[-25.4, -53.2], [-19.7, -44.1]];
+export function isInSaoPaulo(p: Place) { return Number.isFinite(p.lat) && Number.isFinite(p.lon) && booleanPointInPolygon([p.lon, p.lat], boundary as MultiPolygon); }

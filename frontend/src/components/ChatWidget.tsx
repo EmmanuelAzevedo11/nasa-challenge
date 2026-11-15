@@ -1,0 +1,253 @@
+import { useEffect, useRef, useState } from "react";
+import { Link, useLocation } from "@tanstack/react-router";
+import ReactMarkdown from "react-markdown";
+import { MessageSquare, Send, X, Maximize2, Plus, Loader2, GripHorizontal } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { usePlatform } from "./PlatformContext";
+import { api } from "@/services/api";
+const suggestions = [
+  "Quais culturas posso considerar para esta região?",
+  "Existe possibilidade de geada nos próximos dias?",
+  "Como a precipitação influencia o plantio?",
+  "O que é rotação de culturas?",
+  "Quais são os benefícios de alternar soja e milho?",
+  "Como posso melhorar a conservação do solo?",
+];
+export function ChatConversation() {
+  const { place, messages, setMessages, selectedCrop } = usePlatform();
+  const [input, setInput] = useState(""),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState("");
+  const end = useRef<HTMLDivElement>(null),
+    run = useRef(0);
+  useEffect(() => {
+    end.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [messages, busy]);
+  async function send(text: string) {
+    if (!text.trim() || busy) return;
+    const token = ++run.current;
+    const history = messages.slice(-8);
+    setMessages((all) => [...all, { role: "user", content: text }]);
+    setInput("");
+    setBusy(true);
+    setError("");
+    try {
+      const response = await api.chat({
+        message: text,
+        location: place,
+        selected_crop: selectedCrop || undefined,
+        history,
+      });
+      if (token !== run.current) return;
+      setMessages((all) => [
+        ...all,
+        { role: "assistant", content: response.answer, metadata: response },
+      ]);
+    } catch (e) {
+      if (token === run.current)
+        setError(e instanceof Error ? e.message : "Não foi possível obter a resposta.");
+    } finally {
+      if (token === run.current) setBusy(false);
+    }
+  }
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex items-center justify-between gap-2 border-b border-border px-4 py-2">
+        <p className="truncate text-xs text-muted-foreground" title={place.name}>
+          {place.name}
+          {selectedCrop ? ` · ${selectedCrop}` : ""}
+        </p>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => {
+            run.current++;
+            setMessages([]);
+            setBusy(false);
+            setError("");
+          }}
+        >
+          <Plus />
+          Nova conversa
+        </Button>
+      </div>
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+        {!messages.length && (
+          <div>
+            <h2 className="mb-3 font-semibold">Olá, vamos conversar sobre sua propriedade?</h2>
+            <div className="space-y-2">
+              {suggestions.map((s) => (
+                <Button
+                  key={s}
+                  variant="outline"
+                  className="h-auto w-full justify-start whitespace-normal py-2 text-left text-xs"
+                  onClick={() => send(s)}
+                >
+                  {s}
+                </Button>
+              ))}
+            </div>
+          </div>
+        )}
+        {messages.map((m, i) => (
+          <div
+            key={i}
+            className={
+              m.role === "user"
+                ? "ml-8 rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground"
+                : "mr-2 text-sm"
+            }
+          >
+            <div className="break-words leading-relaxed [&_p]:my-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5">
+              <ReactMarkdown>{m.content}</ReactMarkdown>
+            </div>
+            {m.metadata && (
+              <div className="mt-3 border-t border-border pt-2 text-[10px] text-muted-foreground">
+                <p>
+                  {m.metadata.status === "provider_error" ||
+                  m.metadata.status === "unavailable" ||
+                  m.metadata.status === "rate_limited"
+                    ? "Assistente indisponível"
+                    : m.metadata.kind === "observed"
+                      ? "Informação observada"
+                      : m.metadata.kind === "estimated"
+                        ? "Estimativa"
+                        : "Interpretação"}
+                  {m.metadata.insufficient_data ? " · Dados insuficientes" : ""}
+                </p>
+                <p>Fontes: {m.metadata.sources.join(" · ") || "Não informadas"}</p>
+                {m.metadata.limitations?.map((limit) => (
+                  <p key={limit}>{limit}</p>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+        {busy && (
+          <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" />
+            Consultando o assistente…
+          </p>
+        )}
+        {error && (
+          <div role="alert" className="rounded-lg bg-destructive/10 p-3 text-xs text-destructive">
+            {error}
+            <Button variant="link" size="sm" onClick={() => send(messages.at(-1)?.content ?? "")}>
+              Tentar novamente
+            </Button>
+          </div>
+        )}
+        <div ref={end} />
+      </div>
+      <form
+        className="flex items-end gap-2 border-t border-border p-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          send(input);
+        }}
+      >
+        <textarea
+          aria-label="Mensagem para AgroSat IA"
+          placeholder="Pergunte sobre plantio, clima ou solo…"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          rows={2}
+          maxLength={2000}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              send(input);
+            }
+          }}
+          className="min-w-0 flex-1 resize-none rounded-md border border-input bg-background p-2 text-sm outline-none focus:ring-1 focus:ring-ring"
+        />
+        <Button
+          type="submit"
+          size="icon"
+          disabled={busy || !input.trim()}
+          aria-label="Enviar mensagem"
+        >
+          <Send />
+        </Button>
+      </form>
+      <p className="px-3 pb-3 text-[10px] leading-relaxed text-muted-foreground">
+        As informações fornecidas são orientativas e não substituem uma avaliação agronômica local.
+      </p>
+    </div>
+  );
+}
+export function ChatWidget() {
+  const { chatOpen, setChatOpen, mapOpen, hasSelectedLocation } = usePlatform();
+  const location = useLocation();
+  const box = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  function drag(e: React.PointerEvent) {
+    if (window.innerWidth < 640 || !box.current) return;
+    const rect = box.current.getBoundingClientRect(),
+      dx = e.clientX - rect.left,
+      dy = e.clientY - rect.top;
+    const move = (event: PointerEvent) =>
+      setPos({
+        left: Math.max(0, Math.min(window.innerWidth - rect.width, event.clientX - dx)),
+        top: Math.max(0, Math.min(window.innerHeight - rect.height, event.clientY - dy)),
+      });
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+  if (location.pathname === "/assistente" && !mapOpen && hasSelectedLocation) return null;
+  if (!chatOpen)
+    return (
+      <Button
+        onClick={() => setChatOpen(true)}
+        size="icon"
+        aria-label="Conversar com AgroSat IA"
+        title="Conversar com AgroSat IA"
+        className="fixed bottom-6 right-6 z-[1150] size-11 shadow-panel"
+      >
+        <MessageSquare />
+      </Button>
+    );
+  return (
+    <section
+      ref={box}
+      aria-label="AgroSat IA"
+      style={pos ?? undefined}
+      className={`fixed z-[1200] flex h-[540px] max-h-[calc(100dvh-240px)] w-[400px] max-w-[calc(100vw-24px)] flex-col overflow-hidden rounded-lg border border-border bg-card shadow-panel sm:max-h-[calc(100dvh-100px)] sm:resize ${pos ? "" : "bottom-36 right-3 sm:bottom-6 sm:right-20"}`}
+    >
+      <header
+        onPointerDown={drag}
+        className="flex touch-none select-none items-center gap-2 bg-primary p-3 text-primary-foreground sm:cursor-move"
+      >
+        <MessageSquare className="size-4" />
+        <h2 className="flex-1 text-sm font-semibold">AgroSat IA</h2>
+        <GripHorizontal className="hidden size-4 sm:block" />
+        <Button
+          asChild
+          variant="ghost"
+          size="icon"
+          className="size-7 text-primary-foreground"
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <Link to="/assistente" aria-label="Expandir conversa">
+            <Maximize2 />
+          </Link>
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-7 text-primary-foreground"
+          aria-label="Fechar assistente"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={() => setChatOpen(false)}
+        >
+          <X />
+        </Button>
+      </header>
+      <ChatConversation />
+    </section>
+  );
+}

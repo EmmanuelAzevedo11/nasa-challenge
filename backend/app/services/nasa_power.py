@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -26,6 +27,12 @@ LIMITATIONS = [
 ]
 
 
+@dataclass
+class PowerDailySeries:
+    daily: list[HistoricalDay]
+    metrics: dict[str, MetricDefinition]
+
+
 def metrics(metadata: dict) -> dict[str, MetricDefinition]:
     return {
         name: MetricDefinition(
@@ -35,6 +42,28 @@ def metrics(metadata: dict) -> dict[str, MetricDefinition]:
         )
         for name, (parameter, unit, height) in PARAMETERS.items()
     }
+
+
+async def get_power_daily(
+    client: ProviderClient, settings: Settings, location: Location, start: date, end: date,
+) -> PowerDailySeries:
+    params = {
+        "latitude": str(location.latitude),
+        "longitude": str(location.longitude),
+        "community": "AG",
+        "parameters": ",".join(parameter for parameter, _, _ in PARAMETERS.values()),
+        "start": start.strftime("%Y%m%d"),
+        "end": end.strftime("%Y%m%d"),
+        "format": "JSON",
+        "time-standard": "LST",
+    }
+    return await client.get(
+        SOURCE,
+        f"{str(settings.nasa_power_base_url).rstrip('/')}/api/temporal/daily/point",
+        params,
+        settings.climate_cache_ttl_seconds,
+        lambda payload: parse_power_daily(payload, start, end),
+    )
 
 
 async def get_climate_history(
@@ -48,24 +77,8 @@ async def get_climate_history(
     if end is None:
         end = datetime.now(LOCAL_TIMEZONE).date() - timedelta(days=1)
     start = max(FIRST_DAILY_DATE, end - timedelta(days=days - 1))
-    params = {
-        "latitude": str(location.latitude),
-        "longitude": str(location.longitude),
-        "community": "AG",
-        "parameters": ",".join(parameter for parameter, _, _ in PARAMETERS.values()),
-        "start": start.strftime("%Y%m%d"),
-        "end": end.strftime("%Y%m%d"),
-        "format": "JSON",
-        "time-standard": "LST",
-    }
     try:
-        return await client.get(
-            SOURCE,
-            f"{str(settings.nasa_power_base_url).rstrip('/')}/api/temporal/daily/point",
-            params,
-            settings.climate_cache_ttl_seconds,
-            lambda payload: parse_history(payload, location, days, start, end),
-        )
+        series = await get_power_daily(client, settings, location, start, end)
     except ProviderError:
         return ClimateHistory(
             location=location,
@@ -78,10 +91,34 @@ async def get_climate_history(
             limitations=LIMITATIONS,
         )
 
+    published = series.daily
+    if not published:
+        status = "insufficient_data"
+        message = "A NASA POWER não retornou valores válidos no período."
+    elif len(published) < days or any(
+        getattr(day, field) is None for day in published for field in PARAMETERS
+    ):
+        status = "partial"
+        message = "Algumas datas ou variáveis do período estão indisponíveis."
+    else:
+        status = "available"
+        message = None
 
-def parse_history(
-    payload: dict[str, Any], location: Location, days: HistoryDays, start: date, end: date
-) -> ClimateHistory:
+    return ClimateHistory(
+        location=location,
+        status=status,
+        message=message,
+        requested_days=days,
+        requested_start=start,
+        requested_end=end,
+        last_available_date=published[-1].date if published else None,
+        metrics=series.metrics,
+        daily=published,
+        limitations=LIMITATIONS,
+    )
+
+
+def parse_power_daily(payload: dict[str, Any], start: date, end: date) -> PowerDailySeries:
     parameters = payload["properties"]["parameter"]
     if not isinstance(parameters, dict):
         raise ValueError("Séries diárias inválidas.")
@@ -110,27 +147,6 @@ def parse_history(
     ):
         published.pop()
 
-    if not published:
-        status = "insufficient_data"
-        message = "A NASA POWER não retornou valores válidos no período."
-    elif len(published) < days or any(
-        getattr(day, field) is None for day in published for field in PARAMETERS
-    ):
-        status = "partial"
-        message = "Algumas datas ou variáveis do período estão indisponíveis."
-    else:
-        status = "available"
-        message = None
-
-    return ClimateHistory(
-        location=location,
-        status=status,
-        message=message,
-        requested_days=days,
-        requested_start=start,
-        requested_end=end,
-        last_available_date=published[-1].date if published else None,
-        metrics=metrics(object_value(payload.get("parameters"))),
-        daily=published,
-        limitations=LIMITATIONS,
+    return PowerDailySeries(
+        daily=published, metrics=metrics(object_value(payload.get("parameters"))),
     )

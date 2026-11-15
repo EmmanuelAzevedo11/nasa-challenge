@@ -9,7 +9,12 @@ FROST_URL = "https://avisos.inmet.gov.br/56121"
 INMET_URL = "https://www.gov.br/mdr/pt-br/centrais-de-conteudo/publicacoes/protecao-e-defesa-civil-sedec/guiapraticodesastres.pdf"
 EMBRAPA_SOY_URL = "https://www.infoteca.cnptia.embrapa.br/infoteca/bitstream/doc/1123928/1/SP-17-2020-online-1.pdf"
 EMBRAPA_CORN_URL = "https://www.infoteca.cnptia.embrapa.br/infoteca/bitstream/doc/748759/1/Milho-Plantio.pdf"
-HEAT_LIMIT_C = {"soybean": 40, "corn": 35}
+SUGARCANE_HEAT_URL = "https://portal.inmet.gov.br/uploads/publicacoesDigitais/agrometeorologia_dos_cultivos.pdf#page=122"
+HEAT_CRITERIA = {
+    "soybean": (40, EMBRAPA_SOY_URL),
+    "corn": (35, EMBRAPA_CORN_URL),
+    "sugarcane": (35, SUGARCANE_HEAT_URL),
+}
 LIMITATION = "Triagem regional baseada em previsão. Para avisos oficiais, consulte o INMET."
 
 
@@ -85,8 +90,7 @@ def water_deficit(forecast: WeatherForecast) -> RiskIndicator:
 
 
 def analyze_risks(forecast: WeatherForecast, crop_id: str | None = None) -> RisksResponse:
-    heat_limit = HEAT_LIMIT_C.get(crop_id)
-    heat_url = {"soybean": EMBRAPA_SOY_URL, "corn": EMBRAPA_CORN_URL}.get(crop_id)
+    heat_limit, heat_url = HEAT_CRITERIA.get(crop_id, (None, None))
     indicators = [
         threshold_indicator(
             forecast, "frost", "temperature_min", "°C", min,
@@ -99,8 +103,8 @@ def analyze_risks(forecast: WeatherForecast, crop_id: str | None = None) -> Risk
             lambda t: (
                 "insufficient_data" if heat_limit is None else "high" if t > heat_limit else "low"
             ),
-            f"Limite de triagem de {heat_limit} °C para a cultura selecionada."
-            if heat_limit is not None else "Há critérios de calor disponíveis para soja e milho.",
+            f"A triagem sinaliza máxima diária prevista acima de {heat_limit} °C para a cultura selecionada."
+            if heat_limit is not None else "Há critérios de calor disponíveis para soja, milho e cana-de-açúcar.",
             ["O efeito térmico depende do estágio, da duração da exposição e da cultivar."], heat_url,
         ),
         threshold_indicator(

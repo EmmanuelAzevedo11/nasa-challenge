@@ -1,0 +1,335 @@
+import { useState } from "react";
+import { useMutation } from "@tanstack/react-query";
+import { Leaf, Check, ArrowRight } from "lucide-react";
+import { api } from "@/services/api";
+import type { CropSuitability, FarmRequest, CropRotationStrategy } from "@/services/contracts";
+import { usePlatform } from "./PlatformContext";
+import { PageTitle } from "./PlatformHeader";
+import { DataState } from "./DataState";
+import { FarmForm } from "./FarmForm";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+export function canCompare(selected: string[], id: string) {
+  return selected.includes(id) || selected.length < 3;
+}
+export function PlanningPage({ rotation = false }: { rotation?: boolean }) {
+  const { place, setSelectedCrop } = usePlatform();
+  const [selected, setSelected] = useState<string[]>([]),
+    [detail, setDetail] = useState<CropSuitability | null>(null);
+  const suitability = useMutation({ mutationFn: (r: FarmRequest) => api.suitability(r) }),
+    rotations = useMutation({ mutationFn: (r: FarmRequest) => api.rotation(r) });
+  const current = rotation ? rotations : suitability;
+  const [resultContext, setResultContext] = useState("");
+  const context = JSON.stringify(place);
+  const resultsValid = context === resultContext;
+  const analyze = (r: FarmRequest) => {
+    setSelected([]);
+    setResultContext(context);
+    if (rotation) rotations.mutate(r);
+    else suitability.mutate(r);
+  };
+  const toggle = (id: string) =>
+    setSelected((all) =>
+      all.includes(id) ? all.filter((x) => x !== id) : all.length < 3 ? [...all, id] : all,
+    );
+  const candidates = resultsValid ? (suitability.data ?? []) : [];
+  const rotationResult = resultsValid ? rotations.data : undefined;
+  const strategies = rotationResult?.strategies ?? [];
+  return (
+    <main className="mx-auto w-full max-w-7xl px-4 py-7 md:px-8">
+      <PageTitle
+        title={rotation ? "Planejamento de Rotação de Culturas" : "Planejamento de Plantio"}
+        subtitle={
+          rotation
+            ? "Explore estratégias de diversificação agrícola para melhorar o manejo da propriedade e contribuir para a conservação do solo."
+            : "Descubra quais culturas merecem ser consideradas para sua propriedade com base em dados ambientais e informações agronômicas."
+        }
+      />
+      <div className="grid items-start gap-8 lg:grid-cols-[360px_minmax(0,1fr)]">
+        <section className="border-b border-border pb-6 lg:border-b-0 lg:border-r lg:pr-7">
+          <h2 className="mb-5 text-lg font-semibold">Sua propriedade</h2>
+          <FarmForm rotation={rotation} busy={current.isPending} onSubmit={analyze} />
+        </section>
+        <section className="min-w-0">
+          <div className="mb-5 flex items-center justify-between gap-3">
+            <h2 className="text-lg font-semibold">
+              {rotation ? "Estratégias de rotação" : "Culturas candidatas"}
+            </h2>
+            {selected.length > 0 && (
+              <span className="text-xs text-muted-foreground">
+                {selected.length} de 3 selecionadas
+              </span>
+            )}
+          </div>
+          {current.isPending ? (
+            <DataState loading />
+          ) : current.error && resultsValid ? (
+            <DataState error={current.error.message} />
+          ) : !(rotation ? strategies.length : candidates.length) ? (
+            <div className="flex min-h-64 flex-col items-center justify-center gap-3 border-y border-border py-8 text-center">
+              <Leaf className="size-8 text-agriculture" />
+              <h3 className="font-medium">
+                {rotation ? "Nenhuma estratégia avaliada" : "Nenhuma análise realizada"}
+              </h3>
+              <p className="max-w-sm text-sm text-muted-foreground">
+                {rotation
+                  ? "As estratégias dependem das condições da propriedade e do histórico agrícola."
+                  : "A avaliação considera condições ambientais e agronômicas; nem toda cultura é adequada à região."}
+              </p>
+              {rotationResult?.limitations.map((limit) => (
+                <p key={limit} className="max-w-md text-xs text-muted-foreground">
+                  {limit}
+                </p>
+              ))}
+            </div>
+          ) : rotation ? (
+            <>
+              <div className="space-y-4">
+                {strategies.map((s) => (
+                  <RotationCard
+                    key={s.id}
+                    strategy={s}
+                    selected={selected.includes(s.id)}
+                    disabled={!canCompare(selected, s.id)}
+                    toggle={() => toggle(s.id)}
+                  />
+                ))}
+              </div>
+              {selected.length >= 2 && (
+                <Comparison
+                  headers={strategies.filter((s) => selected.includes(s.id)).map((s) => s.name)}
+                  rows={["Objetivo", "Sequência", "Benefícios potenciais", "Cuidados"].map(
+                    (label, i) => [
+                      label,
+                      ...strategies
+                        .filter((s) => selected.includes(s.id))
+                        .map(
+                          (s) =>
+                            [
+                              s.objective,
+                              s.sequence.map((x) => x.crop).join(" → "),
+                              s.benefits.join("; "),
+                              s.restrictions.join("; "),
+                            ][i],
+                        ),
+                    ],
+                  )}
+                />
+              )}
+            </>
+          ) : (
+            <>
+              <div className="grid gap-4 xl:grid-cols-2">
+                {candidates.map((c) => (
+                  <article key={c.crop.id} className="rounded-lg border border-border bg-card p-5">
+                    <div className="mb-3 flex items-center justify-between">
+                      <h3 className="flex items-center gap-2 text-lg font-semibold">
+                        <Leaf className="size-5 text-agriculture" />
+                        {c.crop.name}
+                      </h3>
+                      <Button
+                        variant={selected.includes(c.crop.id) ? "secondary" : "ghost"}
+                        size="sm"
+                        disabled={!canCompare(selected, c.crop.id)}
+                        onClick={() => toggle(c.crop.id)}
+                      >
+                        <Check />
+                        {selected.includes(c.crop.id) ? "Selecionada" : "Comparar"}
+                      </Button>
+                    </div>
+                    <span className="text-xs font-medium text-agriculture">{c.classification}</span>
+                    <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
+                      {c.justification}
+                    </p>
+                    <dl className="mt-4 space-y-2 text-xs">
+                      <div>
+                        <dt className="text-muted-foreground">Época de plantio</dt>
+                        <dd>{c.planting_window}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-muted-foreground">Necessidades hídricas</dt>
+                        <dd>{c.water}</dd>
+                      </div>
+                    </dl>
+                    <Button
+                      className="mt-4 w-full"
+                      variant="outline"
+                      onClick={() => {
+                        setDetail(c);
+                        setSelectedCrop(c.crop.name);
+                      }}
+                    >
+                      Ver análise detalhada
+                      <ArrowRight />
+                    </Button>
+                  </article>
+                ))}
+              </div>
+              {selected.length >= 2 && (
+                <Comparison
+                  headers={candidates
+                    .filter((c) => selected.includes(c.crop.id))
+                    .map((c) => c.crop.name)}
+                  rows={[
+                    "Compatibilidade climática",
+                    "Disponibilidade hídrica",
+                    "Janela de plantio",
+                    "Restrições",
+                  ].map((label, i) => [
+                    label,
+                    ...candidates
+                      .filter((c) => selected.includes(c.crop.id))
+                      .map(
+                        (c) =>
+                          [c.climate, c.water, c.planting_window, c.restrictions.join("; ")][i],
+                      ),
+                  ])}
+                />
+              )}
+            </>
+          )}
+        </section>
+      </div>
+      <Dialog
+        open={Boolean(detail)}
+        onOpenChange={(open) => {
+          if (!open) setDetail(null);
+        }}
+      >
+        <DialogContent className="max-h-[85dvh] overflow-y-auto">
+          <DialogTitle>{detail?.crop.name} · Análise detalhada</DialogTitle>
+          <DialogDescription>{detail?.classification}</DialogDescription>
+          {detail && (
+            <>
+              <p className="text-sm">{detail.justification}</p>
+              {[
+                ["Clima", detail.climate],
+                ["Água", detail.water],
+                ["Janela de plantio", detail.planting_window],
+              ].map(([label, value]) => (
+                <div key={label}>
+                  <h4 className="text-xs font-medium text-muted-foreground">{label}</h4>
+                  <p className="mt-1 text-sm">{value}</p>
+                </div>
+              ))}
+              <div>
+                <h4 className="text-xs font-medium text-muted-foreground">ZARC</h4>
+                <a
+                  href={detail.zarc_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-1 inline-block text-sm underline underline-offset-4"
+                >
+                  {detail.zarc}
+                </a>
+              </div>
+              <h4 className="text-sm font-medium">Restrições</h4>
+              <ul className="list-disc pl-5 text-sm">
+                {detail.restrictions.map((r) => (
+                  <li key={r}>{r}</li>
+                ))}
+              </ul>
+              <p className="text-xs text-muted-foreground">
+                Fontes: {detail.sources.join(" · ") || "Não informadas"}
+              </p>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+    </main>
+  );
+}
+function RotationCard({
+  strategy: s,
+  selected,
+  disabled,
+  toggle,
+}: {
+  strategy: CropRotationStrategy;
+  selected: boolean;
+  disabled: boolean;
+  toggle: () => void;
+}) {
+  return (
+    <article className="rounded-lg border border-border p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="font-semibold">{s.name}</h3>
+          <p className="mt-1 text-xs text-muted-foreground">{s.objective}</p>
+        </div>
+        <Button
+          size="sm"
+          variant={selected ? "secondary" : "outline"}
+          disabled={disabled}
+          onClick={toggle}
+        >
+          <Check />
+          {selected ? "Selecionada" : "Comparar"}
+        </Button>
+      </div>
+      <ol className="mt-5 grid gap-x-4 gap-y-3 sm:grid-cols-2">
+        {s.sequence.map((step, i) => (
+          <li key={`${step.season}-${i}`} className="border-l-2 border-agriculture pl-3">
+            <p className="text-[11px] text-muted-foreground">{step.season}</p>
+            <p className="my-1 flex items-center gap-2 font-medium">
+              <Leaf className="size-4 shrink-0 text-agriculture" />
+              <span className="min-w-0 wrap-anywhere">{step.crop}</span>
+            </p>
+            <p className="text-xs text-muted-foreground">{step.period}</p>
+          </li>
+        ))}
+      </ol>
+      <div className="mt-5 grid gap-4 sm:grid-cols-2">
+        <div>
+          <h4 className="text-xs font-medium text-agriculture">Benefícios potenciais</h4>
+          <ul className="mt-2 list-disc pl-4 text-xs text-muted-foreground">
+            {s.benefits.map((b) => (
+              <li key={b}>{b}</li>
+            ))}
+          </ul>
+        </div>
+        <div>
+          <h4 className="text-xs font-medium">Restrições e cuidados</h4>
+          <ul className="mt-2 list-disc pl-4 text-xs text-muted-foreground">
+            {s.restrictions.map((b) => (
+              <li key={b}>{b}</li>
+            ))}
+          </ul>
+        </div>
+      </div>
+      <p className="mt-4 text-[10px] text-muted-foreground">Fontes: {s.sources.join(" · ")}</p>
+    </article>
+  );
+}
+function Comparison({ headers, rows }: { headers: string[]; rows: (string | undefined)[][] }) {
+  return (
+    <section className="mt-7">
+      <h3 className="mb-3 text-lg font-semibold">Comparação de alternativas</h3>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[580px] text-left text-xs">
+          <thead className="bg-muted">
+            <tr>
+              <th className="p-3">Critério</th>
+              {headers.map((h) => (
+                <th key={h} className="p-3">
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i} className="border-b border-border">
+                {r.map((v, j) => (
+                  <td key={j} className="p-3 align-top leading-relaxed">
+                    {v}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}

@@ -9,6 +9,7 @@ from app.schemas.location import Coordinates, Location
 MetricStatus = Literal["available", "unavailable", "insufficient_data", "provider_error"]
 DatasetStatus = MetricStatus | Literal["partial"]
 DataType = Literal["observed", "historical", "estimated", "forecast"]
+NASA_POWER_SPATIAL_RESOLUTION = "0.5° latitude × 0.625° longitude (nominal)"
 
 
 class HistoryDays(IntEnum):
@@ -57,7 +58,7 @@ class ClimateHistory(BaseModel):
     source: Literal["NASA POWER"] = "NASA POWER"
     data_type: Literal["historical"] = "historical"
     time_standard: Literal["LST"] = "LST"
-    spatial_resolution: str = "0.5° latitude × 0.625° longitude (nominal)"
+    spatial_resolution: str = NASA_POWER_SPATIAL_RESOLUTION
     status: DatasetStatus
     message: str | None = None
     requested_days: HistoryDays

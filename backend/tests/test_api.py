@@ -12,7 +12,7 @@ def test_health_openapi_and_cors(make_client):
         schema = client.get("/openapi.json").json()
         assert set(schema["paths"]) == {
             "/health", "/api/v1/regions/summary",
-            "/api/v1/weather/forecast", "/api/v1/climate/history",
+            "/api/v1/weather/forecast", "/api/v1/climate/history", "/api/v1/climate/series",
             "/api/v1/crops", "/api/v1/crops/zarc", "/api/v1/crops/suitability",
             "/api/v1/crops/rotation", "/api/v1/ai/chat",
             "/api/v1/terrain", "/api/v1/soil", "/api/v1/risks",

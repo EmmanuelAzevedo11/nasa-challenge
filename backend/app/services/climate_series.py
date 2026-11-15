@@ -1,0 +1,147 @@
+from calendar import monthrange
+from collections.abc import Callable
+from datetime import date, datetime, timedelta
+from math import fsum
+from statistics import fmean
+
+from fastapi import HTTPException
+
+from app.core.config import Settings
+from app.core.http_client import ProviderClient, ProviderError
+from app.schemas.climate_series import (
+    Aggregation,
+    ClimateMetric,
+    ClimateMetricSeries,
+    ClimateSeriesFilters,
+    ClimateSeriesPoint,
+    ClimateSeriesResponse,
+    GroupBy,
+)
+from app.schemas.environmental import DatasetStatus, HistoricalDay
+from app.schemas.location import Location
+from app.services.nasa_power import FIRST_DAILY_DATE, LIMITATIONS, LOCAL_TIMEZONE, get_power_daily, metrics
+
+MAX_YEARS = 5
+OPERATIONS: dict[ClimateMetric, tuple[Aggregation, Callable[[list[float]], float]]] = {
+    "precipitation": ("sum", fsum),
+    "temperature": ("mean", fmean),
+    "temperature_min": ("min", min),
+    "temperature_max": ("max", max),
+    "relative_humidity": ("mean", fmean),
+    "wind_speed": ("mean", fmean),
+}
+SERIES_LIMITATIONS = [
+    "As agregações incluem somente os meses selecionados.",
+    "O valor principal exige todos os dias do período selecionado. O valor parcial usa os dias disponíveis.",
+]
+
+
+def resolve_years(filters: ClimateSeriesFilters, current_year: int) -> tuple[int, int]:
+    end = filters.end_year if filters.end_year is not None else current_year
+    start = filters.start_year if filters.start_year is not None else max(FIRST_DAILY_DATE.year, end - MAX_YEARS + 1)
+    if not start <= end <= current_year or end - start >= MAX_YEARS:
+        raise HTTPException(422, detail={
+            "code": "invalid_period",
+            "message": "Informe anos em ordem crescente, sem anos futuros e com até cinco anos por consulta.",
+        })
+    return start, end
+
+
+def group_dates(
+    start_year: int, end_year: int, months: list[int], group_by: GroupBy, last_day: date,
+) -> dict[str, list[date]]:
+    groups: dict[str, list[date]] = {}
+    for year in range(start_year, end_year + 1):
+        for month in months or range(1, 13):
+            count = monthrange(year, month)[1]
+            for number in range(1, count + 1):
+                day = date(year, month, number)
+                if group_by == "day" and day > last_day:
+                    continue
+                if group_by == "year":
+                    key = str(year)
+                elif group_by == "month":
+                    key = day.strftime("%Y-%m")
+                else:
+                    key = day.isoformat()
+                groups.setdefault(key, []).append(day)
+    return {key: days for key, days in groups.items() if days[0] <= last_day}
+
+
+def make_points(
+    metric: ClimateMetric, period_dates: dict[str, list[date]], data: dict[date, HistoricalDay],
+    aggregate: Callable[[list[float]], float], failed: bool,
+) -> list[ClimateSeriesPoint]:
+    points = []
+    for period, dates in period_dates.items():
+        rows = [data[day] for day in dates if day in data]
+        values = [value for value in (getattr(row, metric) for row in rows) if value is not None]
+        if failed:
+            status = "provider_error"
+        elif len(values) == len(dates):
+            status = "available"
+        elif values:
+            status = "partial"
+        else:
+            status = "insufficient_data"
+
+        computed = round(aggregate(values), 4) if values else None
+        points.append(ClimateSeriesPoint(
+            period=period, start_date=dates[0], end_date=dates[-1],
+            days_expected=len(dates), days_available=len(values),
+            value=computed if status == "available" else None,
+            partial_value=computed if status == "partial" else None,
+            status=status,
+        ))
+    return points
+
+
+async def get_climate_series(
+    client: ProviderClient, settings: Settings, location: Location, filters: ClimateSeriesFilters,
+) -> ClimateSeriesResponse:
+    today = datetime.now(LOCAL_TIMEZONE).date()
+    start_year, end_year = resolve_years(filters, today.year)
+    cutoff = min(date(end_year, 12, 31), today - timedelta(days=1))
+    months = sorted(set(filters.month))
+    groups = group_dates(start_year, end_year, months, filters.group_by, cutoff)
+    metadata = metrics({})
+    data: dict[date, HistoricalDay] = {}
+    failed = False
+    queried_through = None
+
+    if groups:
+        # Keep the date window independent of chart filters to reuse the monthly and daily cache entry.
+        queried_through = cutoff
+        try:
+            upstream = await get_power_daily(client, settings, location, date(start_year, 1, 1), cutoff)
+            metadata = upstream.metrics
+            data = {row.date: row for row in upstream.daily}
+        except ProviderError:
+            failed = True
+
+    series = []
+    for metric in dict.fromkeys(filters.metric):
+        aggregation, aggregate = OPERATIONS[metric]
+        unit = metadata[metric].unit
+        if metric == "precipitation" and unit == "mm/day":
+            unit = "mm"
+        series.append(ClimateMetricSeries(
+            metric=metric, unit=unit, aggregation=aggregation,
+            points=make_points(metric, groups, data, aggregate, failed),
+        ))
+
+    statuses = {point.status for entry in series for point in entry.points}
+    status: DatasetStatus
+    if failed:
+        status = "provider_error"
+    elif statuses == {"available"}:
+        status = "available"
+    elif statuses & {"available", "partial"}:
+        status = "partial"
+    else:
+        status = "insufficient_data"
+    return ClimateSeriesResponse(
+        location=location, status=status, start_year=start_year, end_year=end_year,
+        months=months, group_by=filters.group_by, queried_through=queried_through,
+        series=series, limitations=[*LIMITATIONS, *SERIES_LIMITATIONS],
+    )

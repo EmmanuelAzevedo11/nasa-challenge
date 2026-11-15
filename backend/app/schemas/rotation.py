@@ -1,7 +1,7 @@
 from datetime import date
-from typing import Literal
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, Field, StringConstraints, ValidationInfo, field_validator, model_validator
 
 from app.schemas.crop import CropAssessment, MonthlyClimate, Reference, SuitabilityRequest
 from app.schemas.location import Location
@@ -13,9 +13,18 @@ StrategyType = Literal["rotation_candidate", "succession", "cover_crop", "sequen
 
 
 class RotationRequest(SuitabilityRequest):
-    previous_crop: str = Field(min_length=1, max_length=40)
+    previous_crop: str | None = Field(default=None, min_length=1, max_length=40)
+    previous_crop_name: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)
+    ] | None = None
     objective: RotationObjective
     previous_planting_date: date | None = None
+
+    @model_validator(mode="after")
+    def validate_previous_crop(self) -> Self:
+        if (self.previous_crop is None) == (self.previous_crop_name is None):
+            raise ValueError("Informe o nome ou o identificador da cultura anterior.")
+        return self
 
     @field_validator("previous_planting_date")
     @classmethod
@@ -27,11 +36,12 @@ class RotationRequest(SuitabilityRequest):
 
 
 class StrategyCrop(BaseModel):
-    crop_id: str
+    crop_id: str | None
     name: str
-    family: str
+    family: str | None
     planting_year: int | None
     planting_month: int | None
+    planting_day: int | None = None
     role: Literal["previous", "grain", "cover"]
 
 

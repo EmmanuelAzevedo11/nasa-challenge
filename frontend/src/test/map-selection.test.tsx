@@ -1,0 +1,28 @@
+import { act, cleanup, renderHook } from '@testing-library/react';
+import { afterEach, describe, expect, it } from 'vitest';
+import { PlatformProvider, usePlatform } from '@/components/PlatformContext';
+
+afterEach(cleanup);
+describe('Map selection flow', () => {
+  it('requires a selection and starts with the map expanded', () => {
+    const { result } = renderHook(usePlatform, { wrapper: PlatformProvider });
+    expect(result.current.hasSelectedLocation).toBe(false);
+    expect(result.current.mapOpen).toBe(true);
+  });
+  it('minimizes after selecting a valid point and retains it when reopening', () => {
+    const { result } = renderHook(usePlatform, { wrapper: PlatformProvider });
+    const point = { lat: -22.9056, lon: -47.0608, name: 'Campinas, SP' };
+    act(() => { expect(result.current.selectPlace(point)).toBe(true); });
+    expect(result.current.hasSelectedLocation).toBe(true);
+    expect(result.current.mapOpen).toBe(false);
+    act(() => result.current.setMapOpen(true));
+    expect(result.current.mapOpen).toBe(true);
+    expect(result.current.place).toEqual(point);
+  });
+  it('does not minimize or unlock the screens for a point outside São Paulo', () => {
+    const { result } = renderHook(usePlatform, { wrapper: PlatformProvider });
+    act(() => { expect(result.current.selectPlace({lat: -22.9068, lon: -43.1729, name: 'Rio de Janeiro'})).toBe(false); });
+    expect(result.current.hasSelectedLocation).toBe(false);
+    expect(result.current.mapOpen).toBe(true);
+  });
+});

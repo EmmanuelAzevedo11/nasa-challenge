@@ -1,0 +1,15 @@
+# AgroSat SP frontend
+- [x] Open on the map, require a valid selection and minimize it into a shared shortcut.
+- [x] Remove map navigation and header AI action; use a conversation bubble for the fixed chat.
+- [x] Verify selection, reopening and navigation on desktop and mobile.
+- [x] Move search to the shared header and synchronize it with map selections.
+- [x] Keep planting as the first navigation item and show it after initial map selection.
+- [x] Verify navigation and synchronized search across screen sizes.
+- [x] Shared navigation, selected location and São Paulo map coverage.
+- [x] Central FastAPI contracts and unavailable states.
+- [x] Environmental summary, history, forecast and backend-supplied risks.
+- [x] Planting analysis, details and comparison.
+- [x] Rotation form, timelines, comparison and educational content.
+- [x] REST chat with geographic context, sources and full-page view.
+- [x] About page, integration documentation, tests and browser checks.
+- [ ] Verify real environmental and agricultural responses end-to-end — awaiting the team's FastAPI URL and final JSON contracts.

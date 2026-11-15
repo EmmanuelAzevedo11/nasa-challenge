@@ -1,0 +1,29 @@
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, expect, it, vi } from "vitest";
+import { FarmForm } from "@/components/FarmForm";
+import { PlatformProvider } from "@/components/PlatformContext";
+
+afterEach(cleanup);
+
+it("keeps the date chosen in the calendar when the previous crop is edited", () => {
+  const submit = vi.fn();
+  render(
+    <PlatformProvider>
+      <FarmForm rotation busy={false} onSubmit={submit} />
+    </PlatformProvider>,
+  );
+
+  const date = screen.getByLabelText<HTMLInputElement>("Época pretendida de plantio");
+  expect(date.type).toBe("date");
+  date.value = "2026-11-22";
+  fireEvent.input(date);
+  fireEvent.change(screen.getByRole("textbox", { name: "Cultura anterior" }), {
+    target: { value: "Feijão" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Explorar estratégias de rotação" }));
+
+  expect(date.value).toBe("2026-11-22");
+  expect(submit).toHaveBeenCalledWith(
+    expect.objectContaining({ planting_date: "2026-11-22", previous_crop_name: "Feijão" }),
+  );
+});

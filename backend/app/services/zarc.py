@@ -4,14 +4,15 @@ import csv
 import gzip
 import logging
 import re
+import sqlite3
 import tempfile
 import unicodedata
 from collections.abc import Iterator
-from dataclasses import dataclass, field
-from datetime import date
+from contextlib import closing
+from dataclasses import dataclass
+from datetime import date, datetime
 from functools import lru_cache
 from pathlib import Path
-from sys import intern
 
 from app.schemas.crop import (
     Crop,
@@ -30,6 +31,10 @@ SEASON_RESOURCES = {
     2026: "139e5a60-1f43-4cc8-aeab-a35dbbf816c0",
     2025: "f9d597f9-0fee-47eb-9344-8642274ca9da",
 }
+WITHOUT_SEASON_RESOURCE = f"{SOURCE_URL}/resource/dae65d31-683f-4ac4-ab90-3abd0c1583ba"
+WITHOUT_SEASON_FILENAME = "sem-safra.csv.gz"
+WITHOUT_SEASON_TYPES = {"PERENE", "OLERÍCOLA", "SEM SAFRA"}
+INDEX_VERSION = 1
 SEASON_FILENAME = re.compile(r"(\d{4})-(\d{4})\.csv(?:\.gz)?")
 DECENDIOS = tuple(f"dec{number}" for number in range(1, 37))
 CONDITION_COLUMNS = {
@@ -47,10 +52,12 @@ REQUIRED_COLUMNS = {
 }
 RISK_CODES = {"20": 20, "30": 30, "40": 40}
 UNAVAILABLE_MESSAGES = {
+    "without_season_unavailable": "A tábua de risco sem safra está indisponível na base local do MAPA.",
+    "before_publication": "A base local não contém portaria aplicável à data de plantio solicitada.",
     "season_unavailable": "A safra solicitada está indisponível na base local do MAPA.",
     "municipality_unresolved": "A identificação segura do município é necessária para consultar o ZARC.",
-    "no_municipality_records": "A base importada para esta safra não contém registros do município.",
-    "no_crop_records": "A base importada não contém uma modalidade da cultura do catálogo para este município e safra.",
+    "no_municipality_records": "A tábua de risco consultada não contém registros do município.",
+    "no_crop_records": "A tábua de risco consultada não contém registros da cultura para o município.",
     "no_matching_conditions": "A base importada não contém registros para a combinação de condições informada.",
 }
 CONDITIONAL_LIMITATION = (
@@ -85,61 +92,94 @@ class Record:
     conditions: ZarcConditions
     ordinance: str | None
     decendios: tuple[str, ...]
-
-
-@dataclass
-class MunicipalityRecords:
-    name: str
-    crops: dict[str, list[Record]] = field(default_factory=dict)
+    published_on: date | None = None
 
 
 class ZarcIndex:
     def __init__(self, directory: Path):
-        self.seasons: dict[int, dict[str, MunicipalityRecords]] = {}
+        self.seasons: dict[int, Path] = {}
+        self.without_season: Path | None = None
         for path in sorted(directory.glob("*.csv*")):
             match = SEASON_FILENAME.fullmatch(path.name)
-            if match is None:
+            if match is None and path.name != WITHOUT_SEASON_FILENAME:
                 continue
-            year = int(match[1])
+            year = int(match[1]) if match else None
             try:
-                if int(match[2]) != year + 1 or year in self.seasons:
+                if match and (int(match[2]) != year + 1 or year in self.seasons):
                     raise ValueError("Use um arquivo por safra no formato AAAA-AAAA.csv[.gz].")
-                self.seasons[year] = read_season(path, year)
-            except (OSError, EOFError, UnicodeError, csv.Error, ValueError) as exc:
+                database = prepare_index(path, year)
+                if year is None:
+                    self.without_season = database
+                else:
+                    self.seasons[year] = database
+            except (OSError, EOFError, UnicodeError, csv.Error, sqlite3.Error, ValueError) as exc:
                 logger.warning("zarc_import_failed file=%s error=%s", path.name, exc)
 
     def coverage(self, season: int) -> ZarcCoverage:
-        municipalities = self.seasons.get(season, {})
-        covered = []
+        covered: dict[str, MunicipalityCoverage] = {}
         all_crops = set()
-        for code, municipality in sorted(municipalities.items()):
-            names = sorted({records[0].name for records in municipality.crops.values()})
-            all_crops.update(names)
-            covered.append(MunicipalityCoverage(ibge_code=code, name=municipality.name, crops=names))
+        if database := self.seasons.get(season):
+            with closing(open_index(database)) as db:
+                for code, municipality, name in db.execute("""
+                    SELECT municipality_code, municipality_name, min(crop_name)
+                    FROM records GROUP BY municipality_code, crop_key ORDER BY municipality_code
+                """):
+                    if code not in covered:
+                        covered[code] = MunicipalityCoverage(ibge_code=code, name=municipality, crops=[])
+                    covered[code].crops.append(name)
+                    all_crops.add(name)
+        for municipality in covered.values():
+            municipality.crops.sort()
         return ZarcCoverage(
-            status="available" if municipalities else "unavailable",
+            status="available" if covered else "unavailable",
             source_url=season_source(season),
             available_seasons=[season_label(year) for year in sorted(self.seasons, reverse=True)],
             season=season_label(season),
-            municipalities=covered,
+            municipalities=list(covered.values()),
             crops=sorted(all_crops),
         )
 
     def query(self, code: str | None, crop: Crop, request: SuitabilityRequest) -> ZarcResult:
-        season = request.season
-        result = ZarcResult(status="available", source_url=season_source(season), season=season_label(season))
+        season = None if crop.zarc_without_season else request.season
+        result = ZarcResult(
+            status="available",
+            source_url=WITHOUT_SEASON_RESOURCE if season is None else season_source(season),
+            season=None if season is None else season_label(season),
+        )
         if code is None:
             return unavailable(result, "municipality_unresolved")
-        if season not in self.seasons:
-            return unavailable(result, "season_unavailable")
-        municipality = self.seasons[season].get(code)
-        if municipality is None:
-            return unavailable(result, "no_municipality_records")
+        database = self.without_season if season is None else self.seasons.get(season)
+        if database is None:
+            return unavailable(result, "without_season_unavailable" if season is None else "season_unavailable")
 
-        names = dict.fromkeys(normalize_name(alias) for alias in crop.zarc_names)
-        records = [record for name in names for record in municipality.crops.get(name, ())]
-        if not records:
-            return unavailable(result, "no_crop_records")
+        names = list(dict.fromkeys(normalize_name(alias) for alias in crop.zarc_names))
+        placeholders = ",".join("?" for _ in names)
+        with closing(open_index(database)) as db:
+            rows = db.execute(
+                f"""SELECT crop_name, crop_code, conditions, ordinance, decendios, published_on
+                    FROM records WHERE municipality_code = ? AND crop_key IN ({placeholders})
+                    ORDER BY crop_key, rowid""",
+                (code, *names),
+            ).fetchall()
+            if not rows:
+                has_municipality = db.execute(
+                    "SELECT 1 FROM records WHERE municipality_code = ? LIMIT 1", (code,)
+                ).fetchone()
+                return unavailable(result, "no_crop_records" if has_municipality else "no_municipality_records")
+
+        records = [
+            Record(
+                name, crop_code, ZarcConditions.model_validate_json(conditions), ordinance,
+                tuple(decendios.split(";")), date.fromisoformat(published) if published else None,
+            )
+            for name, crop_code, conditions, ordinance, decendios, published in rows
+        ]
+        if season is None:
+            last_day = request.planting_day or calendar.monthrange(request.planting_year, request.planting_month)[1]
+            through = date(request.planting_year, request.planting_month, last_day)
+            records = [record for record in records if record.published_on and record.published_on <= through]
+            if not records:
+                return unavailable(result, "before_publication")
 
         filters = request.zarc_conditions.model_dump(exclude_none=True)
         result.scenarios = [
@@ -161,6 +201,8 @@ class ZarcIndex:
         if not result.scenarios:
             return unavailable(result, "no_matching_conditions")
         result.limitations = [CONDITIONAL_LIMITATION]
+        if season is None:
+            result.limitations.append("Cultura sem safra anual. Confira a vigência da portaria para a data escolhida.")
         return result
 
 
@@ -176,12 +218,17 @@ def requested_periods(record: Record, request: SuitabilityRequest) -> list[ZarcP
         if day is not None and not first <= day <= last:
             continue
         number = (month - 1) * 3 + index
+        starts, ends = date(year, month, first), date(year, month, last)
+        if record.published_on:
+            starts = max(starts, record.published_on)
+            if starts > ends:
+                continue
         raw = record.decendios[number - 1]
         risk = RISK_CODES.get(raw)
         periods.append(ZarcPeriod(
             decendio=number,
-            start_on=date(year, month, first),
-            end_on=date(year, month, last),
+            start_on=starts,
+            end_on=ends,
             status="window" if risk is not None else "no_window" if raw == "0" else "unknown",
             risk_percent=risk,
             source_value=raw or None,
@@ -189,7 +236,7 @@ def requested_periods(record: Record, request: SuitabilityRequest) -> list[ZarcP
     return periods
 
 
-def read_sp_rows(path: Path, season: int) -> Iterator[tuple[list[str], dict[str, str]]]:
+def read_sp_rows(path: Path, season: int | None) -> Iterator[tuple[list[str], dict[str, str]]]:
     open_csv = gzip.open if path.suffix == ".gz" else open
     with open_csv(path, "rt", encoding="utf-8-sig", newline="") as stream:
         header = stream.readline()
@@ -204,8 +251,13 @@ def read_sp_rows(path: Path, season: int) -> Iterator[tuple[list[str], dict[str,
                 continue
             if None in row or None in row.values():
                 raise ValueError(f"Linha {rows.line_num + 1} com quantidade incorreta de colunas.")
-            if (row["safraini"].strip(), row["safrafin"].strip()) != (str(season), str(season + 1)):
-                raise ValueError(f"Linha {rows.line_num + 1} pertence a outra safra.")
+            start, end = row["safraini"].strip(), row["safrafin"].strip()
+            valid_scope = (
+                (start, end) == (str(season), str(season + 1)) if season is not None
+                else not start and end.upper() in WITHOUT_SEASON_TYPES
+            )
+            if not valid_scope:
+                raise ValueError(f"Linha {rows.line_num + 1} pertence a outra tábua de risco.")
             if not re.fullmatch(r"35\d{5}", row["geocodigo"].strip()):
                 raise ValueError(f"Geocódigo paulista inválido na linha {rows.line_num + 1}.")
             if not all(row[name].strip() for name in ("municipio", "nome_cultura", "cod_cultura")):
@@ -213,39 +265,99 @@ def read_sp_rows(path: Path, season: int) -> Iterator[tuple[list[str], dict[str,
             yield columns, row
 
 
-def read_season(path: Path, season: int) -> dict[str, MunicipalityRecords]:
-    municipalities: dict[str, MunicipalityRecords] = {}
-    condition_sets: dict[tuple[str, ...], ZarcConditions] = {}
-    risk_patterns: dict[tuple[str, ...], tuple[str, ...]] = {}
-    for _, row in read_sp_rows(path, season):
-        code = intern(row["geocodigo"].strip())
-        municipality = municipalities.get(code)
-        if municipality is None:
-            municipality = MunicipalityRecords(name=row["municipio"].strip())
-            municipalities[code] = municipality
-        name = intern(row["nome_cultura"].strip())
-        condition_values = tuple(row.get(column, "").strip() for column in CONDITION_COLUMNS.values())
-        if condition_values not in condition_sets:
-            condition_sets[condition_values] = ZarcConditions.model_validate({
-                name: value or None for name, value in zip(CONDITION_COLUMNS, condition_values)
-            })
-        decendios = tuple(row[column].strip() for column in DECENDIOS)
-        record = Record(
-            name=name,
-            code=intern(row["cod_cultura"].strip()),
-            conditions=condition_sets[condition_values],
-            ordinance=intern(row["portaria"].strip()) or None,
-            decendios=risk_patterns.setdefault(decendios, decendios),
-        )
-        municipality.crops.setdefault(normalize_name(name), []).append(record)
-    if not municipalities:
-        raise ValueError("Nenhum registro da safra foi encontrado em São Paulo.")
-    return municipalities
+def open_index(path: Path) -> sqlite3.Connection:
+    return sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
 
 
-def import_csv(source: Path, directory: Path, season: int) -> tuple[Path, int]:
+@lru_cache(maxsize=512)
+def publication_date(ordinance: str) -> str | None:
+    match = re.search(r"(\d{2}-\d{2}-\d{4})$", ordinance)
+    if not match:
+        return None
+    try:
+        return datetime.strptime(match[1], "%d-%m-%Y").date().isoformat()
+    except ValueError:
+        return None
+
+
+def index_path(source: Path) -> Path:
+    return source.parent / ".index" / f"{source.name}.sqlite3"
+
+
+def temporary_index(source: Path, directory: Path, season: int | None) -> Path:
+    stat = source.stat()
     directory.mkdir(parents=True, exist_ok=True)
-    destination = directory / f"{season}-{season + 1}.csv.gz"
+    with tempfile.NamedTemporaryFile(dir=directory, suffix=".sqlite3", delete=False) as stream:
+        database = Path(stream.name)
+    conditions: dict[tuple[str, ...], str] = {}
+
+    def rows():
+        for _, row in read_sp_rows(source, season):
+            values = tuple(row.get(column, "").strip() for column in CONDITION_COLUMNS.values())
+            if values not in conditions:
+                conditions[values] = ZarcConditions.model_validate({
+                    key: value or None for key, value in zip(CONDITION_COLUMNS, values)
+                }).model_dump_json(exclude_none=True)
+            name, ordinance = row["nome_cultura"].strip(), row["portaria"].strip()
+            yield (
+                row["geocodigo"].strip(), row["municipio"].strip(), normalize_name(name), name,
+                row["cod_cultura"].strip(), conditions[values], ordinance or None,
+                ";".join(row[column].strip() for column in DECENDIOS),
+                publication_date(ordinance) if season is None else None,
+            )
+
+    complete = False
+    try:
+        with closing(sqlite3.connect(database)) as db, db:
+            db.execute("""CREATE TABLE records (
+                municipality_code TEXT NOT NULL, municipality_name TEXT NOT NULL,
+                crop_key TEXT NOT NULL, crop_name TEXT NOT NULL, crop_code TEXT NOT NULL,
+                conditions TEXT NOT NULL, ordinance TEXT, decendios TEXT NOT NULL, published_on TEXT
+            )""")
+            inserted = db.executemany("INSERT INTO records VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows())
+            if not inserted.rowcount:
+                raise ValueError("Nenhum registro foi encontrado em São Paulo.")
+            db.execute("CREATE INDEX municipality_crop ON records(municipality_code, crop_key)")
+            db.execute("CREATE TABLE source (size INTEGER NOT NULL, mtime INTEGER NOT NULL)")
+            db.execute("INSERT INTO source VALUES (?, ?)", (stat.st_size, stat.st_mtime_ns))
+            db.execute(f"PRAGMA user_version = {INDEX_VERSION}")
+        current = source.stat()
+        if (current.st_ino, current.st_size, current.st_mtime_ns) != (stat.st_ino, stat.st_size, stat.st_mtime_ns):
+            raise ValueError("O arquivo de origem foi alterado durante a indexação.")
+        complete = True
+        return database
+    finally:
+        if not complete:
+            database.unlink(missing_ok=True)
+
+
+def prepare_index(source: Path, season: int | None) -> Path:
+    destination = index_path(source)
+    if destination.exists():
+        try:
+            stat = source.stat()
+            with closing(open_index(destination)) as db:
+                version, = db.execute("PRAGMA user_version").fetchone()
+                if version == INDEX_VERSION and db.execute("SELECT size, mtime FROM source").fetchone() == (
+                    stat.st_size, stat.st_mtime_ns
+                ):
+                    return destination
+        except sqlite3.Error:
+            logger.warning("zarc_rebuilding_index file=%s", destination.name)
+
+    temporary = temporary_index(source, destination.parent, season)
+    try:
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return destination
+
+
+def import_csv(source: Path, directory: Path, season: int | None) -> tuple[Path, int]:
+    directory.mkdir(parents=True, exist_ok=True)
+    filename = WITHOUT_SEASON_FILENAME if season is None else f"{season}-{season + 1}.csv.gz"
+    destination = directory / filename
+    indexed = index_path(destination)
     with tempfile.NamedTemporaryFile(dir=directory, suffix=".csv.gz", delete=False) as temp:
         temporary_path = Path(temp.name)
     try:
@@ -258,8 +370,13 @@ def import_csv(source: Path, directory: Path, season: int) -> tuple[Path, int]:
                     writer.writeheader()
                 writer.writerow(row)
                 count += 1
-        read_season(temporary_path, season)
-        temporary_path.replace(destination)
+
+        database = temporary_index(temporary_path, indexed.parent, season)
+        try:
+            temporary_path.replace(destination)
+            database.replace(indexed)
+        finally:
+            database.unlink(missing_ok=True)
     finally:
         temporary_path.unlink(missing_ok=True)
     return destination, count
@@ -270,13 +387,15 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Importar registros de São Paulo de um CSV oficial do ZARC.")
     parser.add_argument("arquivo", type=Path)
-    parser.add_argument("--safra-inicio", type=int, required=True)
+    scope = parser.add_mutually_exclusive_group(required=True)
+    scope.add_argument("--safra-inicio", type=int)
+    scope.add_argument("--sem-safra", action="store_true", help="Importa a tábua de perenes, olerícolas e sem safra.")
     args = parser.parse_args()
-    if not 1981 <= args.safra_inicio <= 2100:
+    if args.safra_inicio is not None and not 1981 <= args.safra_inicio <= 2100:
         parser.error("Informe o ano inicial da safra entre 1981 e 2100.")
     try:
         path, rows = import_csv(args.arquivo, Settings().resolved_zarc_data_dir, args.safra_inicio)
-    except (OSError, EOFError, UnicodeError, csv.Error, ValueError) as exc:
+    except (OSError, EOFError, UnicodeError, csv.Error, sqlite3.Error, ValueError) as exc:
         parser.exit(1, f"Falha na importação do ZARC: {exc}\n")
     print(f"{rows} registros de São Paulo importados para {path}.")
 

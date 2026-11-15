@@ -7,7 +7,7 @@ from app.schemas.location import Location
 from app.schemas.rotation import RotationRequest, RotationResponse, RotationStrategy, StrategyCrop, StrategyType
 from app.services.crop_analysis import analyze_suitability
 from app.services.crop_catalog import get_crops
-from app.services.zarc import ZarcIndex
+from app.services.zarc import ZarcIndex, normalize_name
 
 ROTATION_SOURCE = Reference(
     title="Embrapa — Sistema Plantio Direto, 500 perguntas e 500 respostas",
@@ -25,10 +25,9 @@ PLAN_LIMIT = (
 
 
 def build_strategy(
-    previous: Crop, candidate: Crop, assessment: CropAssessment, request: RotationRequest,
+    previous: StrategyCrop, candidate: Crop, assessment: CropAssessment, request: RotationRequest,
 ) -> RotationStrategy:
     earlier = request.previous_planting_date
-    different_family = previous.family != candidate.family
     cover = candidate.id in COVER_CROPS and request.objective == "soil_conservation"
     kind: StrategyType = "sequence_to_validate"
     if cover:
@@ -42,7 +41,11 @@ def build_strategy(
 
     benefits = list(candidate.rotation_roles)
     restrictions = [*assessment.restrictions, PLAN_LIMIT]
-    if different_family:
+    if previous.family is None:
+        restrictions.append(
+            "A cultura anterior está fora do catálogo. Confirme a família botânica e a compatibilidade da sequência."
+        )
+    elif previous.family != candidate.family:
         benefits.append("Alternância entre famílias botânicas.")
     else:
         restrictions.append("As duas culturas são da mesma família. Revise alvos fitossanitários em comum.")
@@ -59,15 +62,11 @@ def build_strategy(
         objective=request.objective,
         strategy_type=kind,
         sequence=[
-            StrategyCrop(
-                crop_id=previous.id, name=previous.name, family=previous.family,
-                planting_month=earlier.month if earlier else None,
-                planting_year=earlier.year if earlier else None, role="previous",
-            ),
+            previous,
             StrategyCrop(
                 crop_id=candidate.id, name=candidate.name, family=candidate.family,
                 planting_month=request.planting_month, planting_year=request.planting_year,
-                role="cover" if cover else "grain",
+                planting_day=request.planting_day, role="cover" if cover else "grain",
             ),
         ],
         benefits=benefits,
@@ -83,7 +82,7 @@ def build_strategy(
 
 def priority(strategy: RotationStrategy) -> tuple:
     previous, candidate = strategy.sequence
-    different_family = previous.family != candidate.family
+    different_family = previous.family is not None and previous.family != candidate.family
     lowest_risk = min(
         period.risk_percent
         for row in strategy.assessment.zarc.scenarios
@@ -92,10 +91,10 @@ def priority(strategy: RotationStrategy) -> tuple:
     )
     favorable = strategy.assessment.classification == "potentially_favorable"
     if strategy.objective == "risk_reduction":
-        return lowest_risk, not favorable, not different_family, candidate.crop_id
+        return lowest_risk, not favorable, not different_family, strategy.assessment.crop_id
     if strategy.objective == "soil_conservation":
-        return candidate.role != "cover", not different_family, not favorable, lowest_risk, candidate.crop_id
-    return not different_family, not favorable, lowest_risk, candidate.crop_id
+        return candidate.role != "cover", not different_family, not favorable, lowest_risk, strategy.assessment.crop_id
+    return not different_family, not favorable, lowest_risk, strategy.assessment.crop_id
 
 
 async def analyze_rotation(
@@ -103,19 +102,36 @@ async def analyze_rotation(
     location: Location, request: RotationRequest,
 ) -> RotationResponse:
     crops = {crop.id: crop for crop in get_crops()}
-    previous = crops.get(request.previous_crop)
-    if previous is None:
-        raise HTTPException(422, detail={
-            "code": "unknown_crop", "message": "Selecione uma cultura anterior do catálogo.",
-        })
+    if request.previous_crop_name is not None:
+        name = normalize_name(request.previous_crop_name)
+        previous_crop = next((
+            crop for crop in crops.values()
+            if any(normalize_name(alias) == name for alias in [crop.name, *crop.zarc_names])
+        ), None)
+        previous_name = previous_crop.name if previous_crop else request.previous_crop_name
+    else:
+        previous_crop = crops.get(request.previous_crop or "")
+        if previous_crop is None:
+            raise HTTPException(422, detail={
+                "code": "unknown_crop", "message": "O identificador da cultura anterior não consta no catálogo.",
+            })
+        previous_name = previous_crop.name
 
+    earlier = request.previous_planting_date
+    previous = StrategyCrop(
+        crop_id=previous_crop.id if previous_crop else None,
+        name=previous_name, family=previous_crop.family if previous_crop else None,
+        planting_year=earlier.year if earlier else None, planting_month=earlier.month if earlier else None,
+        planting_day=earlier.day if earlier else None, role="previous",
+    )
     suitability = await analyze_suitability(client, settings, index, location, request)
     strategies = []
     incomplete = False
     for assessment in suitability.alternatives:
         crop = crops[assessment.crop_id]
-        if crop.id == previous.id or (
-            request.objective == "grain_production" and crop.id == "sunn_hemp"
+        if crop.id == previous.crop_id or (
+            request.objective == "grain_production"
+            and not {"Produção de grãos", "Grãos"}.intersection(crop.purposes)
         ):
             continue
         if assessment.classification == "insufficient_data":

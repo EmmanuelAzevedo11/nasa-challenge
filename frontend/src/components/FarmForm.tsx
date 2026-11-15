@@ -1,0 +1,142 @@
+import { useState } from "react";
+import { ArrowRight, Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { rotationObjectives } from "@/services/fastapi";
+import type { FarmRequest, RotationObjective } from "@/services/contracts";
+import { usePlatform } from "./PlatformContext";
+
+const minDate = "1982-01-01";
+const maxDate = "2100-12-31";
+
+export function validateFarm(request: FarmRequest, rotation = false) {
+  const date = request.planting_date;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date < minDate || date > maxDate) return false;
+  const parsed = new Date(date);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) return false;
+  return (
+    !rotation ||
+    Boolean(
+      request.previous_crop_name?.trim() &&
+      request.priority &&
+      (!request.previous_planting_date || request.previous_planting_date < date),
+    )
+  );
+}
+
+export function FarmForm({
+  rotation = false,
+  busy,
+  onSubmit,
+}: {
+  rotation?: boolean;
+  busy: boolean;
+  onSubmit: (request: FarmRequest) => void;
+}) {
+  const { place, setMapOpen } = usePlatform();
+  const [date, setDate] = useState(() =>
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Sao_Paulo",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date()),
+  );
+  const [previous, setPrevious] = useState("");
+  const [previousDate, setPreviousDate] = useState("");
+  const [priority, setPriority] = useState<RotationObjective>("soil_conservation");
+  const selectClass = "mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm";
+  const request = {
+    location: place,
+    planting_date: date,
+    previous_crop_name: previous.trim(),
+    previous_planting_date: previousDate,
+    priority,
+  };
+
+  return (
+    <form
+      className="space-y-5"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (validateFarm(request, rotation)) onSubmit(request);
+      }}
+    >
+      <div className="flex items-center justify-between gap-3 border-b border-border pb-4">
+        <div className="min-w-0">
+          <p className="text-xs text-muted-foreground">Localização da propriedade</p>
+          <p className="truncate text-sm font-medium" title={place.name}>
+            {place.name}
+          </p>
+        </div>
+        <Button type="button" variant="link" size="sm" onClick={() => setMapOpen(true)}>
+          Alterar no mapa <ArrowRight />
+        </Button>
+      </div>
+      <label className="block text-sm">
+        Época pretendida de plantio
+        <Input
+          type="date"
+          required
+          min={minDate}
+          max={maxDate}
+          value={date}
+          onInput={(event) => setDate(event.currentTarget.value)}
+          className="mt-2 bg-background"
+        />
+      </label>
+      {rotation && (
+        <>
+          <label className="block text-sm">
+            Cultura anterior
+            <Input
+              type="text"
+              required
+              maxLength={80}
+              placeholder="Ex.: soja ou feijão"
+              value={previous}
+              onChange={(event) => setPrevious(event.target.value)}
+              className="mt-2 bg-background"
+            />
+          </label>
+          <label className="block text-sm">
+            Data do plantio anterior (opcional)
+            <Input
+              type="date"
+              value={previousDate}
+              onInput={(event) => setPreviousDate(event.currentTarget.value)}
+              className="mt-2 bg-background"
+            />
+          </label>
+          {previousDate && date && previousDate >= date && (
+            <p role="alert" className="text-xs text-destructive">
+              A data do plantio anterior deve preceder a data do próximo plantio.
+            </p>
+          )}
+          <label className="block text-sm">
+            Objetivo principal
+            <select
+              value={priority}
+              onChange={(event) => setPriority(event.target.value as RotationObjective)}
+              className={selectClass}
+            >
+              {Object.entries(rotationObjectives).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </>
+      )}
+      <Button
+        type="submit"
+        disabled={busy || !validateFarm(request, rotation)}
+        className="h-auto min-h-10 w-full whitespace-normal py-3"
+      >
+        {busy ? <Loader2 className="animate-spin" /> : <ArrowRight />}
+        {rotation ? "Explorar estratégias de rotação" : "Analisar possibilidades de plantio"}
+      </Button>
+    </form>
+  );
+}

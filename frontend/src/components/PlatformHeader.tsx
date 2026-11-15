@@ -1,0 +1,78 @@
+import { Link } from "@tanstack/react-router";
+import { Sprout, Map, ChartNoAxesCombined, Rows3, Leaf, Info } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { usePlatform } from "./PlatformContext";
+import { LocationSearch } from "./LocationSearch";
+const nav = [
+  ["/plantio", "Plantio", Sprout],
+  ["/dashboard", "Monitoramento", ChartNoAxesCombined],
+  ["/rotacao", "Rotação", Rows3],
+  ["/sobre", "Sobre", Info],
+] as const;
+export function PlatformHeader() {
+  const { coverageError, hasSelectedLocation } = usePlatform();
+  return (
+    <>
+      <header className="sticky top-0 z-[1100] shrink-0 border-b border-border bg-card">
+        <div className="flex flex-wrap items-center gap-3 px-4 py-3">
+          <Link to="/" className="flex shrink-0 items-center gap-2">
+            <span className="grid size-9 place-items-center rounded-lg bg-agriculture/10 text-agriculture">
+              <Leaf className="size-5" />
+            </span>
+            <span className="font-semibold">
+              AgroSat <span className="text-agriculture">SP</span>
+            </span>
+          </Link>
+          <div className="min-w-0 flex-1 basis-52 md:max-w-xl">
+            <LocationSearch />
+          </div>
+          <nav
+            aria-label="Navegação principal"
+            className="flex w-full gap-1 overflow-x-auto md:ml-auto md:w-auto"
+          >
+            {nav.map(([to, label, Icon]) => (
+              <Button
+                key={to}
+                asChild
+                variant="ghost"
+                size="sm"
+                className="shrink-0"
+                disabled={!hasSelectedLocation}
+              >
+                <Link
+                  to={to}
+                  activeProps={{ className: "bg-accent text-primary" }}
+                  activeOptions={{ exact: true }}
+                >
+                  <Icon />
+                  {label}
+                </Link>
+              </Button>
+            ))}
+          </nav>
+        </div>
+      </header>
+      {coverageError && (
+        <div
+          role="alert"
+          className="z-[1050] bg-destructive/10 px-4 py-2 text-center text-sm text-destructive"
+        >
+          {coverageError}
+        </div>
+      )}
+    </>
+  );
+}
+export function PageTitle({ title, subtitle }: { title: string; subtitle: string }) {
+  const { place } = usePlatform();
+  return (
+    <header className="mb-7 border-b border-border pb-5">
+      <p className="mb-2 flex items-center gap-2 text-xs text-agriculture">
+        <Map className="size-3.5" />
+        {place.name} · {place.lat.toFixed(4)}, {place.lon.toFixed(4)}
+      </p>
+      <h1 className="text-2xl font-semibold">{title}</h1>
+      <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">{subtitle}</p>
+    </header>
+  );
+}

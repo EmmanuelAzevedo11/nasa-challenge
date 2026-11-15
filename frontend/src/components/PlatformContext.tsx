@@ -1,0 +1,63 @@
+import { createContext, useContext, useState, type ReactNode } from "react";
+import { DEFAULT_PLACE, type Place, isInSaoPaulo } from "@/lib/climate";
+import type { ChatMessage } from "@/services/contracts";
+type Platform = {
+  place: Place;
+  selectPlace: (p: Place) => boolean;
+  hasSelectedLocation: boolean;
+  mapOpen: boolean;
+  setMapOpen: (b: boolean) => void;
+  coverageError: string;
+  chatOpen: boolean;
+  setChatOpen: (b: boolean) => void;
+  messages: ChatMessage[];
+  setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
+  selectedCrop: string;
+  setSelectedCrop: (s: string) => void;
+};
+const Context = createContext<Platform | null>(null);
+export function PlatformProvider({ children }: { children: ReactNode }) {
+  const [place, setPlace] = useState(DEFAULT_PLACE),
+    [coverageError, setCoverageError] = useState(""),
+    [chatOpen, setChatOpen] = useState(false),
+    [messages, setMessages] = useState<ChatMessage[]>([]),
+    [selectedCrop, setSelectedCrop] = useState("");
+  const [hasSelectedLocation, setHasSelectedLocation] = useState(false),
+    [mapOpen, setMapOpen] = useState(true);
+  const selectPlace = (p: Place) => {
+    if (!isInSaoPaulo(p)) {
+      setCoverageError("A cobertura atual da plataforma está limitada ao estado de São Paulo.");
+      return false;
+    }
+    setPlace(p);
+    setCoverageError("");
+    setHasSelectedLocation(true);
+    setMapOpen(false);
+    return true;
+  };
+  return (
+    <Context.Provider
+      value={{
+        place,
+        selectPlace,
+        hasSelectedLocation,
+        mapOpen,
+        setMapOpen,
+        coverageError,
+        chatOpen,
+        setChatOpen,
+        messages,
+        setMessages,
+        selectedCrop,
+        setSelectedCrop,
+      }}
+    >
+      {children}
+    </Context.Provider>
+  );
+}
+export function usePlatform() {
+  const context = useContext(Context);
+  if (!context) throw new Error("PlatformProvider required");
+  return context;
+}

@@ -1,0 +1,97 @@
+export type Location = { lat: number; lon: number; name: string };
+export type Availability = "available" | "partial" | "unavailable";
+export type Indicator = {
+  id: string;
+  label: string;
+  value: number | string | null;
+  unit: string;
+  source: string | null;
+  reference_date: string | null;
+  status: Availability;
+  kind?: "observed" | "estimated" | "interpretation";
+};
+export type EnvironmentalSummary = { updated_at: string | null; indicators: Indicator[] };
+export type WeatherData = {
+  date: string;
+  temperature: number | null;
+  precipitation: number | null;
+  humidity: number | null;
+  wind: number | null;
+  rain_probability?: number | null;
+  source: string;
+  reference_date: string | null;
+};
+export type ClimateHistory = { days: WeatherData[]; source: string; reference_date: string | null };
+export type EnvironmentalRisk = {
+  id: string;
+  name: string;
+  level: "Baixo" | "Moderado" | "Alto" | "Indisponível";
+  explanation: string;
+  period: string;
+  reference_date?: string | null;
+  criteria_url?: string | null;
+  source: string | null;
+};
+export type Crop = { id: string; name: string };
+export type CropSuitability = {
+  crop: Crop;
+  classification: string;
+  justification: string;
+  planting_window: string;
+  climate: string;
+  water: string;
+  restrictions: string[];
+  zarc: string;
+  zarc_url: string;
+  sources: string[];
+};
+export type RotationObjective =
+  "soil_conservation" | "diversification" | "grain_production" | "risk_reduction";
+export type FarmRequest = {
+  location: Location;
+  planting_date: string;
+  previous_crop_name?: string;
+  previous_planting_date?: string;
+  priority?: RotationObjective;
+};
+export type ClimateSeries = {
+  source: string;
+  status: string;
+  series: {
+    unit: string | null;
+    points: {
+      period: string;
+      days_expected: number;
+      days_available: number;
+      value: number | null;
+    }[];
+  }[];
+};
+export type CropRotationStrategy = {
+  id: string;
+  name: string;
+  objective: string;
+  sequence: { season: string; crop: string; period: string }[];
+  benefits: string[];
+  restrictions: string[];
+  sources: string[];
+};
+export type ChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+  metadata?: AIChatResponse;
+};
+export type AIChatRequest = {
+  message: string;
+  location: Location;
+  selected_crop?: string | undefined;
+  history: ChatMessage[];
+};
+export type AIChatResponse = {
+  answer: string;
+  sources: string[];
+  kind: "observed" | "estimated" | "interpretation";
+  insufficient_data?: boolean;
+  status?: "available" | "partial" | "unavailable" | "rate_limited" | "provider_error";
+  limitations?: string[];
+};

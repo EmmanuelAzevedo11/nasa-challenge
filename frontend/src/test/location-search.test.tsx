@@ -1,0 +1,18 @@
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it } from 'vitest';
+import { PlatformProvider, usePlatform } from '@/components/PlatformContext';
+import { LocationSearch } from '@/components/LocationSearch';
+
+function MapSelection() {
+  const { selectPlace } = usePlatform();
+  return <button onClick={() => selectPlace({lat:-22.9056,lon:-47.0608,name:'-22.9056, -47.0608'})}>Select map point</button>;
+}
+afterEach(cleanup);
+describe('Shared location search', () => {
+  it('replaces an edited search with the coordinates selected on the map', () => {
+    render(<PlatformProvider><LocationSearch/><MapSelection/></PlatformProvider>);
+    fireEvent.change(screen.getByRole('textbox'), {target:{value:'Outra busca'}});
+    fireEvent.click(screen.getByRole('button', {name:'Select map point'}));
+    expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe('-22.9056, -47.0608');
+  });
+});

@@ -1,0 +1,159 @@
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import type { Location } from "@/services/contracts";
+import { api } from "@/services/api";
+import { DataState } from "./DataState";
+
+const metrics = {
+  precipitation: "Precipitação acumulada",
+  temperature: "Temperatura média",
+  temperature_min: "Temperatura mínima",
+  temperature_max: "Temperatura máxima",
+  relative_humidity: "Umidade relativa média",
+  wind_speed: "Velocidade média do vento",
+};
+
+const months = Array.from({ length: 12 }, (_, index) =>
+  new Intl.DateTimeFormat("pt-BR", { month: "long", timeZone: "UTC" }).format(
+    new Date(Date.UTC(2020, index, 1)),
+  ),
+);
+const number = new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 2 });
+
+export function ClimateSeriesChart({ place }: { place: Location }) {
+  const currentYear = Number(
+    new Intl.DateTimeFormat("pt-BR", { year: "numeric", timeZone: "America/Sao_Paulo" }).format(
+      new Date(),
+    ),
+  );
+  const years = Array.from({ length: 5 }, (_, index) => currentYear - 4 + index);
+  const [startYear, setStartYear] = useState(currentYear - 4);
+  const [endYear, setEndYear] = useState(currentYear);
+  const [month, setMonth] = useState(0);
+  const [metric, setMetric] = useState<keyof typeof metrics>("precipitation");
+  const query = useQuery({
+    queryKey: ["climate-series", place, startYear, endYear, month, metric],
+    queryFn: () => api.series(place, startYear, endYear, month, metric),
+    retry: false,
+  });
+  const series = query.data?.series[0];
+  const control = "mt-1 block w-full rounded border border-input bg-background px-2 py-1.5";
+
+  return (
+    <section className="mt-8 border-t border-border pt-6">
+      <h2 className="mb-4 text-lg font-semibold">Histórico climático dos últimos cinco anos</h2>
+      <div className="mb-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
+        <label>
+          Ano inicial
+          <select
+            className={control}
+            value={startYear}
+            onChange={(event) => setStartYear(Number(event.target.value))}
+          >
+            {years
+              .filter((year) => year <= endYear)
+              .map((year) => (
+                <option key={year}>{year}</option>
+              ))}
+          </select>
+        </label>
+        <label>
+          Ano final
+          <select
+            className={control}
+            value={endYear}
+            onChange={(event) => setEndYear(Number(event.target.value))}
+          >
+            {years
+              .filter((year) => year >= startYear)
+              .map((year) => (
+                <option key={year}>{year}</option>
+              ))}
+          </select>
+        </label>
+        <label>
+          Mês
+          <select
+            className={control}
+            value={month}
+            onChange={(event) => setMonth(Number(event.target.value))}
+          >
+            <option value={0}>Todos os meses</option>
+            {months.map((label, index) => (
+              <option key={label} value={index + 1}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Indicador
+          <select
+            className={control}
+            value={metric}
+            onChange={(event) => setMetric(event.target.value as keyof typeof metrics)}
+          >
+            {Object.entries(metrics).map(([id, label]) => (
+              <option key={id} value={id}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      {query.isPending ? (
+        <DataState loading />
+      ) : query.error ? (
+        <DataState error={query.error.message} retry={() => query.refetch()} />
+      ) : !series?.points.length ? (
+        <DataState />
+      ) : (
+        <>
+          <p className="mb-3 text-xs text-muted-foreground">
+            {query.data?.source} · {metrics[metric]}
+            {series.unit ? ` (${series.unit})` : ""}
+          </p>
+          <ResponsiveContainer width="100%" height={250}>
+            <BarChart data={series.points}>
+              <CartesianGrid stroke="var(--border)" vertical={false} />
+              <XAxis dataKey="period" fontSize={10} minTickGap={16} />
+              <YAxis fontSize={10} />
+              <Tooltip />
+              <Bar
+                dataKey="value"
+                name={metrics[metric]}
+                unit={series.unit ? ` ${series.unit}` : ""}
+                fill="var(--water)"
+                isAnimationActive={false}
+              />
+            </BarChart>
+          </ResponsiveContainer>
+          <details className="mt-3 text-xs">
+            <summary className="cursor-pointer font-medium">Valores e cobertura por mês</summary>
+            <table className="mt-2 w-full text-left">
+              <thead>
+                <tr>
+                  <th>Período</th>
+                  <th>Valor {series.unit ? `(${series.unit})` : ""}</th>
+                  <th>Dias com dados</th>
+                </tr>
+              </thead>
+              <tbody>
+                {series.points.map((point) => (
+                  <tr key={point.period} className="border-t border-border">
+                    <td className="py-1.5">{point.period}</td>
+                    <td>{point.value === null ? "Indisponível" : number.format(point.value)}</td>
+                    <td>
+                      {point.days_available} de {point.days_expected}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
+        </>
+      )}
+    </section>
+  );
+}

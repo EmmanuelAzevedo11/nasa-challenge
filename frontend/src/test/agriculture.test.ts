@@ -1,0 +1,30 @@
+import { describe, it, expect } from "vitest";
+import { isInSaoPaulo } from "@/lib/climate";
+import { validateFarm } from "@/components/FarmForm";
+import { canCompare } from "@/components/PlanningPage";
+import type { FarmRequest } from "@/services/contracts";
+const farm: FarmRequest = {
+  location: { lat: -22.9056, lon: -47.0608, name: "Campinas" },
+  previous_crop_name: "Feijão",
+  planting_date: "2026-11-15",
+  priority: "soil_conservation",
+};
+describe("Agricultural input rules", () => {
+  it("limits geographic coverage to São Paulo, not the bounding rectangle", () => {
+    expect(isInSaoPaulo(farm.location)).toBe(true);
+    expect(isInSaoPaulo({ lat: -22.9, lon: -43.2, name: "Rio" })).toBe(false);
+    expect(isInSaoPaulo({ lat: -19.9, lon: -47.9, name: "Uberaba, MG" })).toBe(false);
+  });
+  it("validates full planting dates and accepts a typed previous crop", () => {
+    expect(validateFarm(farm, true)).toBe(true);
+    expect(validateFarm({ ...farm, previous_crop_name: " " }, true)).toBe(false);
+    expect(validateFarm({ ...farm, previous_planting_date: "2026-11-01" }, true)).toBe(true);
+    expect(validateFarm({ ...farm, previous_planting_date: "2026-11-15" }, true)).toBe(false);
+    expect(validateFarm({ ...farm, planting_date: "2026-02-29" })).toBe(false);
+  });
+  it("allows two or three comparison alternatives but not a fourth", () => {
+    expect(canCompare(["a", "b"], "c")).toBe(true);
+    expect(canCompare(["a", "b", "c"], "d")).toBe(false);
+    expect(canCompare(["a", "b", "c"], "b")).toBe(true);
+  });
+});

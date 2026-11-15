@@ -1,0 +1,61 @@
+from datetime import date
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, Field
+
+from app.schemas.environmental import NASA_POWER_SPATIAL_RESOLUTION, DatasetStatus
+from app.schemas.location import Location
+
+ClimateMetric = Literal[
+    "precipitation", "temperature", "temperature_min", "temperature_max",
+    "relative_humidity", "wind_speed",
+]
+GroupBy = Literal["day", "month", "year"]
+Aggregation = Literal["sum", "mean", "min", "max"]
+MonthNumber = Annotated[int, Field(ge=1, le=12)]
+
+
+class ClimateSeriesFilters(BaseModel):
+    start_year: int | None = Field(None, ge=1981, description="Primeiro ano da série, inclusive.")
+    end_year: int | None = Field(None, ge=1981, description="Último ano da série, inclusive.")
+    month: list[MonthNumber] = Field(
+        default_factory=list, max_length=12, description="Meses selecionados. Repita o parâmetro para escolher mais de um.",
+    )
+    metric: list[ClimateMetric] = Field(
+        default_factory=lambda: ["precipitation"], min_length=1, max_length=6,
+        description="Variáveis para o gráfico. Repita o parâmetro para escolher mais de uma.",
+    )
+    group_by: GroupBy = Field("month", description="Granularidade dos pontos da série.")
+
+
+class ClimateSeriesPoint(BaseModel):
+    period: str
+    start_date: date
+    end_date: date
+    days_expected: int
+    days_available: int
+    value: float | None
+    partial_value: float | None = None
+    status: DatasetStatus
+
+
+class ClimateMetricSeries(BaseModel):
+    metric: ClimateMetric
+    unit: str | None
+    aggregation: Aggregation
+    points: list[ClimateSeriesPoint]
+
+
+class ClimateSeriesResponse(BaseModel):
+    location: Location
+    source: Literal["NASA POWER"] = "NASA POWER"
+    time_standard: Literal["LST"] = "LST"
+    spatial_resolution: str = NASA_POWER_SPATIAL_RESOLUTION
+    status: DatasetStatus
+    start_year: int
+    end_year: int
+    months: list[MonthNumber]
+    group_by: GroupBy
+    queried_through: date | None
+    series: list[ClimateMetricSeries]
+    limitations: list[str]

@@ -13,6 +13,7 @@ RiskPercent = Literal[20, 30, 40]
 ZarcStatus = Literal[
     "available", "season_unavailable", "municipality_unresolved",
     "no_municipality_records", "no_crop_records", "no_matching_conditions",
+    "without_season_unavailable", "before_publication",
 ]
 Classification = Literal[
     "potentially_favorable", "restricted", "unfavorable", "insufficient_data"
@@ -42,6 +43,7 @@ class Crop(BaseModel):
     air_temperature_c: AirTemperatureRange | None = None
     references: list[Reference]
     zarc_names: list[str]
+    zarc_without_season: bool = False
 
 
 class ZarcConditions(BaseModel):
@@ -112,7 +114,7 @@ class ZarcResult(BaseModel):
     status: ZarcStatus
     source: str = "MAPA — ZARC Tábua de Risco"
     source_url: HttpUrl
-    season: str
+    season: str | None
     scenarios: list[ZarcScenario] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
 

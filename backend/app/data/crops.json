@@ -151,5 +151,42 @@
     "zarc_names": [
       "Crotalária-júncea"
     ]
+  },
+  {
+    "id": "sugarcane",
+    "name": "Cana-de-açúcar",
+    "scientific_name": "Saccharum officinarum",
+    "family": "Poaceae",
+    "purposes": [
+      "Produção de açúcar e etanol",
+      "Outros fins, conforme a modalidade"
+    ],
+    "climate_requirements": "Calor e radiação favorecem o crescimento quando há água disponível. Temperaturas mais amenas e menor disponibilidade de água podem favorecer a maturação.",
+    "water_requirements": "A disponibilidade de água é especialmente importante no estabelecimento e no crescimento vegetativo. A demanda ao longo do ciclo depende da fase, do solo e do ambiente de produção.",
+    "restrictions": [
+      "As portarias consultadas tratam de cultivo em sequeiro. Verifique no ZARC a finalidade, a classe de água disponível do solo e o decêndio para o município."
+    ],
+    "rotation_roles": [
+      "Produção de colmos em ciclo com possibilidade de rebrota"
+    ],
+    "references": [
+      {
+        "title": "Embrapa — Características da cana-de-açúcar",
+        "url": "https://www.embrapa.br/en/web/agencia-de-informacao-tecnologica/cultivos/cana-de-acucar/pre-producao/caracteristicas"
+      },
+      {
+        "title": "Embrapa — Plantio de cana-de-açúcar",
+        "url": "https://www.embrapa.br/web/agencia-de-informacao-tecnologica/cultivos/cana-de-acucar/producao/manejo/plantio"
+      },
+      {
+        "title": "MAPA — Portarias vigentes do ZARC de São Paulo",
+        "url": "https://www.gov.br/agricultura/pt-br/assuntos/riscos-seguro/programa-nacional-de-zoneamento-agricola-de-risco-climatico/portarias/safra-vigente/sao-paulo"
+      }
+    ],
+    "zarc_names": [
+      "Cana-de-Açúcar (açúcar e álcool)",
+      "Cana-de-Açúcar (outros fins)"
+    ],
+    "zarc_without_season": true
   }
 ]
