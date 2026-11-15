@@ -6,7 +6,7 @@ const location = { latitude: place.lat, longitude: place.lon };
 const fetchMock = vi.fn<typeof fetch>();
 
 beforeEach(() => {
-  vi.stubEnv("VITE_API_BASE_URL", "http://127.0.0.1:8000");
+  vi.stubEnv("VITE_API_BASE_URL", "https://nasa-challenge-nvrf.onrender.com");
   vi.stubGlobal("fetch", fetchMock);
 });
 afterEach(() => {
@@ -35,7 +35,7 @@ describe("FastAPI client integration", () => {
 
     const history = await api.history(place, 90);
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
-      "http://127.0.0.1:8000/api/v1/climate/history?latitude=-23.5886&longitude=-48.0483&days=90",
+      "https://nasa-challenge-nvrf.onrender.com/api/v1/climate/history?latitude=-23.5886&longitude=-48.0483&days=90",
     );
     expect(history.days[0]).toMatchObject({ humidity: 65, wind: 3, precipitation: 10 });
     expect(history.reference_date).toBe("2026-05-01");
