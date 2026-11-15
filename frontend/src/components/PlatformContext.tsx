@@ -26,7 +26,7 @@ export function PlatformProvider({ children }: { children: ReactNode }) {
     [mapOpen, setMapOpen] = useState(true);
   const selectPlace = (p: Place) => {
     if (!isInSaoPaulo(p)) {
-      setCoverageError("A cobertura atual da plataforma está limitada ao estado de São Paulo.");
+      setCoverageError("Coverage is limited to the state of São Paulo.");
       return false;
     }
     setPlace(p);

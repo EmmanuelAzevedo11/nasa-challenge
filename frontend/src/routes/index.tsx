@@ -4,7 +4,7 @@ import { pageHead } from '@/lib/metadata';
 import { usePlatform } from '@/components/PlatformContext';
 
 export const Route = createFileRoute('/')({
-  head: () => pageHead('Sua propriedade no mapa', 'Selecione sua propriedade no mapa de São Paulo para iniciar o planejamento agrícola no AgroSat SP.'),
+  head: () => pageHead('Your farm on the map', 'Select your farm on the São Paulo map to start planning with AgroSat SP.'),
   component: EntryPage,
 });
 

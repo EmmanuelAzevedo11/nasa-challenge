@@ -1,0 +1,7 @@
+from typing import Literal
+
+Language = Literal["pt", "en"]
+
+
+def localized(language: Language, portuguese: str, english: str) -> str:
+    return english if language == "en" else portuguese
