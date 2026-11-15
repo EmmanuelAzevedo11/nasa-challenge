@@ -14,8 +14,8 @@ def test_health_openapi_and_cors(make_client):
             "/health", "/api/v1/regions/summary",
             "/api/v1/weather/forecast", "/api/v1/climate/history",
             "/api/v1/crops", "/api/v1/crops/zarc", "/api/v1/crops/suitability",
-            "/api/v1/crops/rotation", "/api/v1/ai/chat", "/api/v1/vegetation/ndvi",
-            "/api/v1/terrain", "/api/v1/soil", "/api/v1/hydrology", "/api/v1/risks",
+            "/api/v1/crops/rotation", "/api/v1/ai/chat",
+            "/api/v1/terrain", "/api/v1/soil", "/api/v1/risks",
         }
         allowed = client.get("/health", headers={"Origin": "http://localhost:5173"})
         denied = client.get("/health", headers={"Origin": "https://example.org"})

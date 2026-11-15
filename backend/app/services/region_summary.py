@@ -5,8 +5,6 @@ from app.core.http_client import ProviderClient
 from app.schemas.environmental import HistoryDays, RegionSummary
 from app.schemas.location import Location
 from app.schemas.region import RegionIndicators, RegionWithIndicators
-from app.services.hydrology import get_hydrology
-from app.services.modis import get_vegetation_index
 from app.services.opentopodata import get_terrain
 from app.services.risk_analysis import analyze_risks
 from app.services.soilgrids import get_soil
@@ -47,16 +45,14 @@ async def get_region_summary(
 async def get_summary_with_indicators(
     client: ProviderClient, settings: Settings, location: Location,
 ) -> RegionWithIndicators:
-    summary, weather, vegetation, terrain, soil, hydrology = await asyncio.gather(
+    summary, weather, terrain, soil = await asyncio.gather(
         get_region_summary(client, settings, location),
         get_weather_forecast(client, settings, location, days=7),
-        get_vegetation_index(client, settings, location),
         get_terrain(client, settings, location),
         get_soil(client, settings, location),
-        get_hydrology(client, settings, location),
     )
     risks = analyze_risks(weather)
-    statuses = {summary.status, vegetation.status, terrain.status, soil.status, hydrology.status, risks.status}
+    statuses = {summary.status, terrain.status, soil.status, risks.status}
     if len(statuses) == 1:
         status = summary.status
     elif statuses & {"available", "partial"}:
@@ -68,6 +64,6 @@ async def get_summary_with_indicators(
     return RegionWithIndicators(
         **summary.model_dump(exclude={"status"}), status=status,
         indicators=RegionIndicators(
-            vegetation=vegetation, terrain=terrain, soil=soil, hydrology=hydrology, risks=risks,
+            terrain=terrain, soil=soil, risks=risks,
         ),
     )

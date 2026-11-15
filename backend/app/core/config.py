@@ -22,12 +22,8 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-3.1-flash-lite"
     gemini_max_requests_per_minute: int = Field(8, ge=1, le=120)
     gemini_timeout_seconds: float = Field(35, gt=0, le=120)
-    modis_base_url: HttpUrl = HttpUrl("https://modis.ornl.gov/rst/api/v1")
     opentopodata_base_url: HttpUrl = HttpUrl("https://api.opentopodata.org")
     soilgrids_wcs_url: HttpUrl = HttpUrl("https://maps.isric.org/mapserv")
-    ana_station_url: HttpUrl = HttpUrl(
-        "https://www.snirh.gov.br/arcgis/rest/services/SGH/REDE_HIDROMETEOROLOGICA_NACIONAL/MapServer/3/query"
-    )
     http_timeout_seconds: float = Field(10, gt=0, le=60)
     http_retries: int = Field(1, ge=0, le=2)
     cache_ttl_seconds: int = Field(900, ge=1)

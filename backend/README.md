@@ -37,10 +37,8 @@ Com o servidor em execução, abra o [Swagger](http://localhost:8000/docs). No R
 | POST | `/api/v1/crops/suitability` | Avaliação regional de alternativas de plantio por período e cenário |
 | POST | `/api/v1/crops/rotation` | Até três estratégias para o próximo plantio |
 | POST | `/api/v1/ai/chat` | Assistente Gemini com ferramentas do backend |
-| GET | `/api/v1/vegetation/ndvi` | Composições NASA MODIS, com `limit` de 1 a 10 |
 | GET | `/api/v1/terrain` | Altitude do SRTM em metros |
 | GET | `/api/v1/soil` | Propriedades estimadas do solo na camada de 0 a 5 cm |
-| GET | `/api/v1/hydrology` | Até cinco estações da ANA em `radius_km` de 5 a 100 |
 | GET | `/api/v1/risks` | Triagem de riscos nos próximos `days` de 1 a 7 |
 
 ```bash
@@ -144,10 +142,8 @@ O assistente executa até cinco chamadas às funções internas por mensagem. A 
 
 ## Indicadores complementares
 
-Em todos os endpoints abaixo, informe `latitude` e `longitude` de um ponto paulista. Adicione `include_indicators=true` na consulta a `/api/v1/regions/summary` para incluir os cinco indicadores no resumo. Cada fonte mantém seu próprio status.
+Em todos os endpoints abaixo, informe `latitude` e `longitude` de um ponto paulista. Adicione `include_indicators=true` na consulta a `/api/v1/regions/summary` para incluir os três indicadores no resumo. Cada fonte mantém seu próprio status.
 
-- **NDVI** usa o pixel MOD13Q1 de 250 m e a composição de 16 dias. A escala é 0,0001 e somente pixels com qualidade 0 e valor bruto válido entram como observações válidas. `latest` é a observação válida mais recente entre as consultadas. Se o ORNL DAAC falhar, a resposta sinaliza `provider_error`. Na validação de 14/11/2026, o provedor excedeu o tempo limite. O tratamento de escala, qualidade e indisponibilidade foi verificado com respostas simuladas. [ORNL DAAC TESViS](https://modis.ornl.gov/data/modis_webservice.html).
 - **Altitude** consulta a grade `srtm90m` do Open Topo Data. [Documentação do SRTM](https://www.opentopodata.org/datasets/srtm/).
 - **Solo** usa o WCS do SoilGrids para consultar pH em água, argila, areia, silte e carbono orgânico na camada de 0 a 5 cm. Cada valor é uma estimativa espacial. Uma célula sem cobertura retorna `null`. [WCS do SoilGrids](https://docs.isric.org/globaldata/soilgrids/wcs.html).
-- **Hidrologia** consulta o inventário público de estações com medição de descarga da ANA, apresentando nome, código, coordenadas e distância em linha reta. Séries de nível e vazão dependem de usuário e senha emitidos pela ANA para o HidroWebService. [Inventário público](https://www.snirh.gov.br/arcgis/rest/services/SGH/REDE_HIDROMETEOROLOGICA_NACIONAL/MapServer/3) · [Manual de acesso da ANA](https://www.gov.br/ana/pt-br/assuntos/monitoramento-e-eventos-criticos/monitoramento-hidrologico/orientacoes-manuais/manuais/manual-hidrowebservice_publica.pdf).
 - **Riscos** usa previsões do Open-Meteo para geada, chuva intensa e vento forte, com critérios de triagem inspirados nos limites do INMET. O calor depende da cultura escolhida por `crop_id` e tem referências para soja e milho. O sinal de déficit hídrico usa chuva menos ET₀ em pelo menos cinco dias completos e a estimativa de umidade de 3 a 9 cm. Os indicadores servem como triagem regional. Para avisos oficiais, consulte o INMET. [Guia de alertas e critérios do INMET](https://www.gov.br/mdr/pt-br/centrais-de-conteudo/publicacoes/protecao-e-defesa-civil-sedec/guiapraticodesastres.pdf).

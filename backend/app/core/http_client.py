@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable
-from typing import Any, cast
+from typing import cast
 
 import httpx
 
@@ -28,19 +28,17 @@ class ProviderClient:
         url: str,
         params: dict[str, str],
         ttl: int,
-        parse: Callable[[Any], T],
-        *,
-        allow_array: bool = False,
+        parse: Callable[[dict], T],
     ) -> T:
         async def load() -> T:
-            payload = await self._get_json(source, url, params, allow_array)
+            payload = await self._get_json(source, url, params)
             try:
                 return parse(payload)
             except (TypeError, ValueError, KeyError, OverflowError) as exc:
                 self._log_failure(source, "invalid_schema")
                 raise ProviderError() from exc
 
-        key = (source, url, tuple(sorted(params.items())), allow_array)
+        key = (source, url, tuple(sorted(params.items())))
         return cast(T, await self.cache.get_or_load(key, ttl, load))
 
     async def get_bytes[T](
@@ -60,16 +58,14 @@ class ProviderClient:
         key = (source, url, tuple(sorted(params.items())), "bytes")
         return cast(T, await self.cache.get_or_load(key, ttl, load))
 
-    async def _get_json(
-        self, source: str, url: str, params: dict[str, str], allow_array: bool,
-    ) -> dict | list:
+    async def _get_json(self, source: str, url: str, params: dict[str, str]) -> dict:
         response = await self._get_response(source, url, params, accept="application/json")
         try:
             payload = response.json()
         except ValueError as exc:
             self._log_failure(source, "invalid_json")
             raise ProviderError() from exc
-        if not isinstance(payload, dict) and not (allow_array and isinstance(payload, list)):
+        if not isinstance(payload, dict):
             self._log_failure(source, "invalid_payload")
             raise ProviderError()
         return payload

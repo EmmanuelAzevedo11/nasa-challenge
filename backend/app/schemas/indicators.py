@@ -4,7 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, HttpUrl
 
 from app.schemas.environmental import DatasetStatus, MetricStatus
-from app.schemas.location import Coordinates, Location
+from app.schemas.location import Location
 
 
 class TerrainResponse(BaseModel):
@@ -15,26 +15,6 @@ class TerrainResponse(BaseModel):
     source: str = "Open Topo Data / NASA SRTM"
     data_type: Literal["observed"] = "observed"
     spatial_resolution_m: int = 90
-    limitations: list[str]
-
-
-class NdviObservation(BaseModel):
-    date: date
-    value: float | None
-    pixel_reliability: int | None
-    status: Literal["available", "insufficient_data"]
-
-
-class NdviResponse(BaseModel):
-    location: Location
-    status: DatasetStatus
-    product: str = "MOD13Q1"
-    source: str = "NASA MODIS / ORNL DAAC"
-    data_type: Literal["observed"] = "observed"
-    spatial_resolution_m: int = 250
-    composite_days: int = 16
-    latest: NdviObservation | None = None
-    observations: list[NdviObservation]
     limitations: list[str]
 
 
@@ -53,25 +33,6 @@ class SoilResponse(BaseModel):
     data_type: Literal["estimated"] = "estimated"
     spatial_resolution_m: int = 250
     properties: list[SoilProperty]
-    limitations: list[str]
-
-
-class HydrologyStation(BaseModel):
-    code: str
-    name: str
-    location: Coordinates
-    distance_km: float
-    operating: bool | None
-    measurement_type: Literal["stream_discharge"] = "stream_discharge"
-
-
-class HydrologyResponse(BaseModel):
-    location: Location
-    status: DatasetStatus
-    source: str = "ANA / SNIRH"
-    search_radius_km: int
-    stations: list[HydrologyStation]
-    observations_status: Literal["unavailable"] = "unavailable"
     limitations: list[str]
 
 

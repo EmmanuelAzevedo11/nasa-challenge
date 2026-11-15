@@ -18,7 +18,7 @@ from app.schemas.crop import Reference, SuitabilityRequest
 from app.schemas.environmental import ClimateHistory, HistoryDays
 from app.schemas.location import Location
 from app.schemas.rotation import RotationRequest
-from app.services import hydrology, modis, opentopodata, soilgrids
+from app.services import opentopodata, soilgrids
 from app.services.crop_analysis import analyze_suitability
 from app.services.crop_rotation import analyze_rotation
 from app.services.nasa_power import LOCAL_TIMEZONE, get_climate_history
@@ -58,15 +58,10 @@ class RiskArguments(ToolArguments):
     crop_id: CropId | None = None
 
 
-class VegetationArguments(ToolArguments):
-    limit: int = Field(6, ge=1, le=10)
-
-
 TOOL_SPECS = {
     "get_climate_history": ("Consultar temperatura e precipitação do histórico climático.", HistoryArguments),
     "get_weather_forecast": ("Consultar condições atuais e previsão meteorológica.", ForecastArguments),
     "get_environmental_summary": ("Consultar resumo de clima recente e meteorologia atual.", ToolArguments),
-    "get_vegetation_index": ("Consultar observações NASA MODIS de NDVI.", VegetationArguments),
     "get_environmental_risks": ("Consultar triagem de geada, calor, chuva, vento e déficit hídrico.", RiskArguments),
     "get_crop_suitability": ("Avaliar plantio de culturas com ZARC. Requer mês e ano de plantio.", PlantingContext),
     "get_crop_rotation_strategies": (
@@ -74,7 +69,6 @@ TOOL_SPECS = {
     ),
     "get_terrain": ("Consultar altitude SRTM.", ToolArguments),
     "get_soil": ("Consultar estimativas superficiais do SoilGrids.", ToolArguments),
-    "get_hydrology": ("Consultar estações fluviométricas próximas no inventário ANA.", ToolArguments),
 }
 TOOLS = types.Tool(function_declarations=[
     types.FunctionDeclaration(name=name, description=description, parameters_json_schema=schema.model_json_schema())
@@ -197,18 +191,14 @@ async def run_tool(
             forecast = await get_weather_forecast(http, settings, location, days=args["days"])
             result = analyze_risks(forecast, args.get("crop_id"))
             return result.model_dump(mode="json"), [METEO]
-        if name == "get_vegetation_index":
-            result = await modis.get_vegetation_index(http, settings, location, limit=args["limit"])
-            url = modis.SOURCE_URL
-        elif name == "get_terrain":
+        if name == "get_terrain":
             result = await opentopodata.get_terrain(http, settings, location)
             url = opentopodata.SOURCE_URL
         elif name == "get_soil":
             result = await soilgrids.get_soil(http, settings, location)
             url = soilgrids.SOURCE_URL
         else:
-            result = await hydrology.get_hydrology(http, settings, location)
-            url = hydrology.SOURCE_URL
+            return {"status": "unknown_tool"}, []
         return result.model_dump(mode="json"), [Reference(title=result.source, url=url)]
     except ValidationError as exc:
         fields = sorted({str(error["loc"][-1]) for error in exc.errors() if error["loc"]})
