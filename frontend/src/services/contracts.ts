@@ -25,7 +25,7 @@ export type ClimateHistory = { days: WeatherData[]; source: string; reference_da
 export type EnvironmentalRisk = {
   id: string;
   name: string;
-  level: "Baixo" | "Moderado" | "Alto" | "Indisponível";
+  level: "Low" | "Moderate" | "High" | "Unavailable";
   explanation: string;
   period: string;
   reference_date?: string | null;
