@@ -1,0 +1,200 @@
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
+
+from app.core.config import Settings
+from app.core.http_client import ProviderClient, ProviderError
+from app.schemas.environmental import (
+    CurrentWeather,
+    DatasetStatus,
+    ForecastDay,
+    Metric,
+    MetricDefinition,
+    MetricStatus,
+    WeatherForecast,
+)
+from app.schemas.location import Coordinates, Location
+from app.services.environmental_data import numeric, object_value, source_unit
+
+SOURCE = "Open-Meteo"
+TIMEZONE = "America/Sao_Paulo"
+LOCAL_TIMEZONE = ZoneInfo(TIMEZONE)
+CURRENT = {
+    "temperature": ("temperature_2m", "°C", 2),
+    "relative_humidity": ("relative_humidity_2m", "%", 2),
+    "precipitation": ("precipitation", "mm", None),
+    "wind_speed": ("wind_speed_10m", "km/h", 10),
+    "wind_gusts": ("wind_gusts_10m", "km/h", 10),
+}
+SOIL_DEPTHS = {
+    "soil_moisture_0_to_1cm": (0, 1),
+    "soil_moisture_1_to_3cm": (1, 3),
+    "soil_moisture_3_to_9cm": (3, 9),
+}
+DAILY = {
+    "temperature_min": ("temperature_2m_min", "°C", 2),
+    "temperature_max": ("temperature_2m_max", "°C", 2),
+    "temperature": ("temperature_2m_mean", "°C", 2),
+    "relative_humidity": ("relative_humidity_2m_mean", "%", 2),
+    "precipitation": ("precipitation_sum", "mm", None),
+    "precipitation_probability_max": ("precipitation_probability_max", "%", None),
+    "wind_speed_max": ("wind_speed_10m_max", "km/h", 10),
+    "wind_gusts_max": ("wind_gusts_10m_max", "km/h", 10),
+    "reference_evapotranspiration": ("et0_fao_evapotranspiration", "mm", None),
+}
+LIMITATIONS = [
+    "As condições atuais e a umidade volumétrica do solo são estimativas de modelos meteorológicos.",
+    "A resolução depende dos modelos e das variáveis que cobrem a região.",
+    "A probabilidade diária de precipitação é o maior valor horário do dia.",
+]
+
+
+def metric_status(values: list[float | None]) -> DatasetStatus:
+    valid = sum(value is not None for value in values)
+    if valid == 0:
+        return "insufficient_data"
+    if valid < len(values):
+        return "partial"
+    return "available"
+
+
+def parse_current(
+    current: dict, units: dict, missing_status: MetricStatus = "insufficient_data"
+) -> CurrentWeather:
+    reference_time = datetime.fromisoformat(current["time"]) if current.get("time") else None
+    if reference_time is not None:
+        reference_time = (
+            reference_time.replace(tzinfo=LOCAL_TIMEZONE)
+            if reference_time.tzinfo is None
+            else reference_time.astimezone(LOCAL_TIMEZONE)
+        )
+
+    def metric(
+        parameter: str, unit: str, height: int | None = None, depth: tuple[int, int] | None = None
+    ) -> Metric:
+        value = numeric(current.get(parameter)) if reference_time is not None else None
+        return Metric(
+            unit=source_unit(units.get(parameter)) or unit,
+            provider_parameter=parameter,
+            height_m=height,
+            depth_cm=depth,
+            value=value,
+            source=SOURCE,
+            data_type="estimated",
+            reference_time=reference_time,
+            status="available" if value is not None else missing_status,
+        )
+
+    weather = {name: metric(*definition) for name, definition in CURRENT.items()}
+    soil = [metric(parameter, "m³/m³", depth=depth) for parameter, depth in SOIL_DEPTHS.items()]
+    interval = current.get("interval")
+    return CurrentWeather(
+        reference_time=reference_time,
+        precipitation_interval_seconds=interval if type(interval) is int and interval > 0 else None,
+        status=(
+            "provider_error" if missing_status == "provider_error"
+            else metric_status([entry.value for entry in [*weather.values(), *soil]])
+        ),
+        soil_moisture=soil,
+        **weather,
+    )
+
+
+def daily_metrics(units: dict) -> dict[str, MetricDefinition]:
+    return {
+        name: MetricDefinition(
+            unit=source_unit(units.get(parameter)) or unit,
+            provider_parameter=parameter,
+            height_m=height,
+        )
+        for name, (parameter, unit, height) in DAILY.items()
+    }
+
+
+async def get_weather_forecast(
+    client: ProviderClient, settings: Settings, location: Location, days: int
+) -> WeatherForecast:
+    params = {
+        "latitude": str(location.latitude),
+        "longitude": str(location.longitude),
+        "timezone": TIMEZONE,
+        "forecast_days": str(days),
+        "temperature_unit": "celsius",
+        "wind_speed_unit": "kmh",
+        "precipitation_unit": "mm",
+        "current": ",".join([*(field[0] for field in CURRENT.values()), *SOIL_DEPTHS]),
+        "daily": ",".join(field[0] for field in DAILY.values()),
+    }
+    try:
+        return await client.get(
+            SOURCE,
+            f"{str(settings.open_meteo_base_url).rstrip('/')}/v1/forecast",
+            params,
+            settings.cache_ttl_seconds,
+            lambda payload: parse_forecast(payload, location, days),
+        )
+    except ProviderError:
+        return WeatherForecast(
+            location=location,
+            status="provider_error",
+            message="A previsão do Open-Meteo está temporariamente indisponível.",
+            requested_days=days,
+            current=parse_current({}, {}, "provider_error"),
+            daily_metrics=daily_metrics({}),
+            limitations=LIMITATIONS,
+        )
+
+
+def parse_forecast(payload: dict, location: Location, days: int) -> WeatherForecast:
+    if payload.get("error") or not any(
+        isinstance(payload.get(key), dict) for key in ("current", "daily")
+    ):
+        raise ValueError("Resposta meteorológica inválida.")
+    if payload.get("timezone", TIMEZONE) != TIMEZONE:
+        raise ValueError("O Open-Meteo retornou um fuso horário diferente do solicitado.")
+
+    current = parse_current(
+        object_value(payload.get("current")), object_value(payload.get("current_units"))
+    )
+    daily = object_value(payload.get("daily"))
+    dates = daily.get("time", [])
+    if not isinstance(dates, list):
+        raise ValueError("Datas da previsão inválidas.")
+
+    forecast = []
+    for index, day in enumerate(dates):
+        values = {}
+        for name, (parameter, _, _) in DAILY.items():
+            column = daily.get(parameter)
+            values[name] = (
+                numeric(column[index]) if isinstance(column, list) and index < len(column) else None
+            )
+        forecast.append(ForecastDay(date=date.fromisoformat(day), **values))
+
+    forecast_status = metric_status([
+        getattr(day, name) for day in forecast for name in DAILY
+        if name != "reference_evapotranspiration"
+    ])
+    if current.status == "insufficient_data" and forecast_status == "insufficient_data":
+        status = "insufficient_data"
+        message = "O Open-Meteo não retornou valores válidos para o período."
+    elif current.status == forecast_status == "available" and len(forecast) == days:
+        status = "available"
+        message = None
+    else:
+        status = "partial"
+        message = "Algumas variáveis ou datas da previsão estão indisponíveis."
+
+    lat, lon = numeric(payload.get("latitude")), numeric(payload.get("longitude"))
+    return WeatherForecast(
+        location=location,
+        status=status,
+        message=message,
+        requested_days=days,
+        model_grid_location=(
+            Coordinates(latitude=lat, longitude=lon) if lat is not None and lon is not None else None
+        ),
+        current=current,
+        daily_metrics=daily_metrics(object_value(payload.get("daily_units"))),
+        daily=forecast,
+        limitations=LIMITATIONS,
+    )

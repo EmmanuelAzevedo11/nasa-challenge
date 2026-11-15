@@ -1,0 +1,73 @@
+import asyncio
+from io import BytesIO
+
+from PIL import Image
+
+from app.core.config import Settings
+from app.core.http_client import ProviderClient, ProviderError
+from app.schemas.indicators import SoilProperty, SoilResponse
+from app.schemas.location import Location
+
+SOURCE_URL = "https://docs.isric.org/globaldata/soilgrids/SoilGrids_faqs_01.html"
+LAYERS = {
+    "phh2o": ("ph_water", "pH", 10, 140),
+    "clay": ("clay", "%", 10, 1000),
+    "sand": ("sand", "%", 10, 1000),
+    "silt": ("silt", "%", 10, 1000),
+    "soc": ("organic_carbon", "g/kg", 10, 10000),
+}
+
+
+def parse_geotiff(payload: bytes, divisor: int, maximum: int) -> float | None:
+    # GDAL_NODATA is serialized as ASCII TIFF tag 42113 when provided.
+    try:
+        with Image.open(BytesIO(payload), formats=["TIFF"]) as image:
+            if image.size != (1, 1) or len(image.getbands()) != 1:
+                raise ValueError("A cobertura deve conter um pixel de uma banda.")
+            value = image.getpixel((0, 0))
+            nodata = image.tag_v2.get(42113)
+    except Image.DecompressionBombError as exc:
+        raise ValueError("Dimensões do raster fora do limite.") from exc
+    if not isinstance(value, (float, int)) or not 0 <= value <= maximum:
+        return None
+    if nodata is not None and value == float(nodata):
+        return None
+    return value / divisor
+
+
+async def get_soil(client: ProviderClient, settings: Settings, location: Location) -> SoilResponse:
+    lat, lon = location.latitude, location.longitude
+    bbox = f"{lon - 0.001},{lat - 0.001},{lon + 0.001},{lat + 0.001}"
+
+    async def fetch(layer: str, name: str, unit: str, divisor: int, maximum: int) -> SoilProperty:
+        try:
+            value = await client.get_bytes(
+                "SoilGrids WCS", str(settings.soilgrids_wcs_url),
+                {
+                    "map": f"/map/{layer}.map", "SERVICE": "WCS", "VERSION": "1.0.0",
+                    "REQUEST": "GetCoverage", "COVERAGE": f"{layer}_0-5cm_mean",
+                    "CRS": "EPSG:4326", "BBOX": bbox, "WIDTH": "1", "HEIGHT": "1",
+                    "FORMAT": "GEOTIFF_INT16", "INTERPOLATION": "nearest neighbor",
+                },
+                86400, lambda payload: parse_geotiff(payload, divisor, maximum),
+            )
+            status = "available" if value is not None else "insufficient_data"
+        except ProviderError:
+            value, status = None, "provider_error"
+        return SoilProperty(property=name, value=value, unit=unit, status=status)
+
+    properties = await asyncio.gather(*(fetch(layer, *spec) for layer, spec in LAYERS.items()))
+    states = {item.status for item in properties}
+    if len(states) == 1:
+        status = next(iter(states))
+    elif "available" in states:
+        status = "partial"
+    else:
+        status = "provider_error"
+    return SoilResponse(
+        location=location, status=status, properties=properties,
+        limitations=[
+            "Predições espaciais para a camada de 0 a 5 cm. Decisões de manejo exigem amostras locais.",
+            "A umidade atual do solo é estimada separadamente pela previsão meteorológica.",
+        ],
+    )

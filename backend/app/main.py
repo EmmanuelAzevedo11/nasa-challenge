@@ -1,0 +1,83 @@
+from contextlib import AsyncExitStack, asynccontextmanager
+
+import httpx
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+from app.api.dependencies import Services
+from app.api.router import router
+from app.core.config import Settings
+from app.core.http_client import ProviderClient
+from app.schemas.environmental import ErrorDetail, ErrorResponse, Health
+from app.services.crop_catalog import get_crops
+from app.services.gemini_agent import ChatRateLimit, make_gemini_client
+from app.services.zarc import ZarcIndex
+from app.utils.geo import OutsideSaoPaulo, load_boundaries
+
+
+def create_app(
+    settings: Settings | None = None, *, transport: httpx.AsyncBaseTransport | None = None
+) -> FastAPI:
+    settings = settings or Settings()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        app.state.boundaries = load_boundaries()
+        get_crops()
+        app.state.zarc = ZarcIndex(settings.resolved_zarc_data_dir)
+        async with AsyncExitStack() as stack:
+            http = await stack.enter_async_context(httpx.AsyncClient(
+                transport=transport,
+                timeout=settings.http_timeout_seconds,
+                limits=httpx.Limits(max_connections=32, max_keepalive_connections=16),
+            ))
+            app.state.services = Services(
+                settings=settings,
+                client=ProviderClient(http, settings.http_retries, settings.cache_max_entries),
+            )
+            gemini = make_gemini_client(settings)
+            app.state.gemini = None
+            if gemini is not None:
+                stack.callback(gemini.close)
+                app.state.gemini = await stack.enter_async_context(gemini.aio)
+            app.state.chat_limit = ChatRateLimit(settings.gemini_max_requests_per_minute)
+            yield
+
+    app = FastAPI(
+        title=settings.app_name,
+        version="0.5.0",
+        description="Dados ambientais e planejamento agrícola regional em São Paulo.",
+        lifespan=lifespan,
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type"],
+    )
+    app.include_router(router)
+
+    @app.get("/health", tags=["Serviço"], summary="Verificar se a API está em execução")
+    async def health() -> Health:
+        return Health()
+
+    @app.exception_handler(OutsideSaoPaulo)
+    async def geographic_error(_: Request, exc: OutsideSaoPaulo) -> JSONResponse:
+        return validation_response("outside_sao_paulo", str(exc))
+
+    @app.exception_handler(RequestValidationError)
+    async def request_error(_: Request, exc: RequestValidationError) -> JSONResponse:
+        fields = ", ".join(sorted({str(error["loc"][-1]) for error in exc.errors()}))
+        return validation_response("invalid_request", f"Campos ausentes ou inválidos: {fields}.")
+
+    return app
+
+
+def validation_response(code: str, message: str) -> JSONResponse:
+    body = ErrorResponse(detail=ErrorDetail(code=code, message=message))
+    return JSONResponse(status_code=422, content=body.model_dump())
+
+
+app = create_app()

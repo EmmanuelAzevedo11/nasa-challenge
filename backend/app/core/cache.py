@@ -1,0 +1,40 @@
+from asyncio import Lock
+from collections import OrderedDict
+from collections.abc import Awaitable, Callable, Hashable
+from contextlib import asynccontextmanager
+from time import monotonic
+
+
+class TTLCache[T]:
+    def __init__(self, max_entries: int):
+        self._entries: OrderedDict[Hashable, tuple[float, T]] = OrderedDict()
+        self._locks: dict[Hashable, tuple[Lock, int]] = {}
+        self._max_entries = max_entries
+
+    @asynccontextmanager
+    async def _lock(self, key: Hashable):
+        lock, users = self._locks.get(key, (Lock(), 0))
+        self._locks[key] = (lock, users + 1)
+        try:
+            async with lock:
+                yield
+        finally:
+            _, users = self._locks[key]
+            if users == 1:
+                del self._locks[key]
+            else:
+                self._locks[key] = (lock, users - 1)
+
+    async def get_or_load(
+        self, key: Hashable, ttl: int, load: Callable[[], Awaitable[T]]
+    ) -> T:
+        async with self._lock(key):
+            entry = self._entries.pop(key, None)
+            if entry is not None and entry[0] > monotonic():
+                self._entries[key] = entry
+                return entry[1]
+            result = await load()
+            self._entries[key] = (monotonic() + ttl, result)
+            if len(self._entries) > self._max_entries:
+                self._entries.popitem(last=False)
+            return result

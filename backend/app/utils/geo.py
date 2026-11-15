@@ -1,0 +1,64 @@
+import gzip
+import json
+from functools import lru_cache
+from pathlib import Path
+
+from shapely import STRtree, MultiPolygon, Point, Polygon, make_valid, prepare
+from shapely.geometry import shape
+
+from app.schemas.location import Coordinates, Location
+
+DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+
+
+class OutsideSaoPaulo(ValueError):
+    pass
+
+
+def polygonal_geometry(geometry: dict) -> Polygon | MultiPolygon:
+    polygon = shape(geometry)
+    if not polygon.is_valid:
+        polygon = make_valid(polygon)
+    if polygon.geom_type == "GeometryCollection":
+        parts = []
+        for part in polygon.geoms:
+            if part.geom_type == "Polygon":
+                parts.append(part)
+            elif part.geom_type == "MultiPolygon":
+                parts.extend(part.geoms)
+        polygon = MultiPolygon(parts)
+    if not isinstance(polygon, (Polygon, MultiPolygon)) or polygon.is_empty:
+        raise ValueError("A malha do IBGE precisa conter polígonos válidos.")
+    return polygon
+
+
+class SaoPauloBoundaries:
+    def __init__(self):
+        with (DATA_DIR / "sp.geojson").open(encoding="utf-8") as stream:
+            state = json.load(stream)["features"][0]
+        self.state = polygonal_geometry(state["geometry"])
+        prepare(self.state)
+
+        with gzip.open(DATA_DIR / "sp_municipalities.geojson.gz", "rt", encoding="utf-8") as stream:
+            municipalities = json.load(stream)["features"]
+        self.municipalities = [feature["properties"] for feature in municipalities]
+        self.index = STRtree([polygonal_geometry(feature["geometry"]) for feature in municipalities])
+
+    def locate(self, coordinates: Coordinates) -> Location:
+        point = Point(coordinates.longitude, coordinates.latitude)
+        if not self.state.covers(point):
+            raise OutsideSaoPaulo("As coordenadas devem estar no estado de São Paulo.")
+
+        matches = self.index.query(point, predicate="within")
+        municipality = self.municipalities[matches[0]] if len(matches) == 1 else {}
+        return Location(
+            latitude=coordinates.latitude,
+            longitude=coordinates.longitude,
+            municipality=municipality.get("name"),
+            municipality_ibge_code=municipality.get("codarea"),
+        )
+
+
+@lru_cache(maxsize=1)
+def load_boundaries() -> SaoPauloBoundaries:
+    return SaoPauloBoundaries()

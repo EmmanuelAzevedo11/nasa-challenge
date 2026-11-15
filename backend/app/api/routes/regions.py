@@ -1,0 +1,17 @@
+from fastapi import APIRouter
+
+from app.api.dependencies import LocationDependency, ServiceDependency
+from app.schemas.environmental import RegionSummary
+from app.schemas.region import RegionWithIndicators
+from app.services.region_summary import get_region_summary, get_summary_with_indicators
+
+router = APIRouter(prefix="/regions", tags=["Regiões"])
+
+
+@router.get("/summary", summary="Obter um resumo agroambiental da região")
+async def summary(
+    location: LocationDependency, services: ServiceDependency, include_indicators: bool = False,
+) -> RegionWithIndicators | RegionSummary:
+    if include_indicators:
+        return await get_summary_with_indicators(services.client, services.settings, location)
+    return await get_region_summary(services.client, services.settings, location)

@@ -1,0 +1,73 @@
+import asyncio
+
+from app.core.config import Settings
+from app.core.http_client import ProviderClient
+from app.schemas.environmental import HistoryDays, RegionSummary
+from app.schemas.location import Location
+from app.schemas.region import RegionIndicators, RegionWithIndicators
+from app.services.hydrology import get_hydrology
+from app.services.modis import get_vegetation_index
+from app.services.opentopodata import get_terrain
+from app.services.risk_analysis import analyze_risks
+from app.services.soilgrids import get_soil
+from app.services.nasa_power import get_climate_history
+from app.services.open_meteo import get_weather_forecast
+
+
+async def get_region_summary(
+    client: ProviderClient, settings: Settings, location: Location
+) -> RegionSummary:
+    forecast, climate = await asyncio.gather(
+        get_weather_forecast(client, settings, location, days=7),
+        get_climate_history(client, settings, location, days=HistoryDays.MONTH),
+    )
+    statuses = {forecast.current.status, climate.status}
+    if len(statuses) == 1:
+        status = forecast.current.status
+    elif statuses & {"available", "partial"}:
+        status = "partial"
+    elif "provider_error" in statuses:
+        status = "provider_error"
+    else:
+        status = "insufficient_data"
+
+    return RegionSummary(
+        location=location,
+        status=status,
+        weather=forecast.current,
+        climate=climate,
+        limitations=[
+            "Visão agroambiental regional. As condições de uma propriedade exigem verificação local.",
+            *forecast.limitations,
+            *climate.limitations,
+        ],
+    )
+
+
+async def get_summary_with_indicators(
+    client: ProviderClient, settings: Settings, location: Location,
+) -> RegionWithIndicators:
+    summary, weather, vegetation, terrain, soil, hydrology = await asyncio.gather(
+        get_region_summary(client, settings, location),
+        get_weather_forecast(client, settings, location, days=7),
+        get_vegetation_index(client, settings, location),
+        get_terrain(client, settings, location),
+        get_soil(client, settings, location),
+        get_hydrology(client, settings, location),
+    )
+    risks = analyze_risks(weather)
+    statuses = {summary.status, vegetation.status, terrain.status, soil.status, hydrology.status, risks.status}
+    if len(statuses) == 1:
+        status = summary.status
+    elif statuses & {"available", "partial"}:
+        status = "partial"
+    elif "provider_error" in statuses:
+        status = "provider_error"
+    else:
+        status = "insufficient_data"
+    return RegionWithIndicators(
+        **summary.model_dump(exclude={"status"}), status=status,
+        indicators=RegionIndicators(
+            vegetation=vegetation, terrain=terrain, soil=soil, hydrology=hydrology, risks=risks,
+        ),
+    )

@@ -1,0 +1,155 @@
+[
+  {
+    "id": "soybean",
+    "name": "Soja",
+    "scientific_name": "Glycine max",
+    "family": "Fabaceae",
+    "purposes": [
+      "Produção de grãos"
+    ],
+    "climate_requirements": "O crescimento responde à temperatura do ar, ao fotoperíodo e à disponibilidade de água. Para germinação, importa a temperatura do solo.",
+    "water_requirements": "A referência indica 450 a 800 mm por ciclo para máximo rendimento, com variação conforme o manejo, o clima e a duração do ciclo.",
+    "restrictions": [
+      "A disponibilidade de água é especialmente importante no estabelecimento, na floração e no enchimento de grãos."
+    ],
+    "rotation_roles": [
+      "Leguminosa de grãos em sistemas diversificados"
+    ],
+    "air_temperature_c": {
+      "minimum": 20,
+      "maximum": 30
+    },
+    "references": [
+      {
+        "title": "Embrapa Soja — Tecnologias de produção de soja",
+        "url": "https://www.infoteca.cnptia.embrapa.br/infoteca/bitstream/doc/1123928/1/SP-17-2020-online-1.pdf"
+      }
+    ],
+    "zarc_names": [
+      "Soja"
+    ]
+  },
+  {
+    "id": "corn",
+    "name": "Milho",
+    "scientific_name": "Zea mays",
+    "family": "Poaceae",
+    "purposes": [
+      "Produção de grãos",
+      "Forragem e silagem"
+    ],
+    "climate_requirements": "Temperatura, água e radiação influenciam o desenvolvimento. A germinação depende da temperatura do solo e a floração responde à temperatura do ar.",
+    "water_requirements": "A disponibilidade de água é crítica no pendoamento, na floração e no enchimento de grãos.",
+    "restrictions": [
+      "Confira o grupo da cultivar e a modalidade da safra na portaria aplicável."
+    ],
+    "rotation_roles": [
+      "Gramínea para diversificar sucessões com leguminosas",
+      "Produção de resíduos vegetais"
+    ],
+    "references": [
+      {
+        "title": "Embrapa Milho e Sorgo — Relações do milho com o clima",
+        "url": "https://www.embrapa.br/en/web/agencia-de-informacao-tecnologica/cultivos/milho/pre-producao/caracteristicas-da-especie-e-relacoes-com-o-ambiente/relacoes-com-o-clima"
+      }
+    ],
+    "zarc_names": [
+      "Milho",
+      "Milho 1ª Safra",
+      "Milho 2ª Safra"
+    ]
+  },
+  {
+    "id": "sorghum",
+    "name": "Sorgo granífero",
+    "scientific_name": "Sorghum bicolor",
+    "family": "Poaceae",
+    "purposes": [
+      "Produção de grãos"
+    ],
+    "climate_requirements": "Cultura de clima quente, sensível a temperaturas noturnas baixas.",
+    "water_requirements": "O suprimento de água é relevante no estádio de plântula e na floração, mesmo em cultivos tolerantes a veranicos.",
+    "restrictions": [
+      "Em segunda safra, a disponibilidade de água no final do ciclo pode restringir o cultivo."
+    ],
+    "rotation_roles": [
+      "Gramínea para diversificação"
+    ],
+    "references": [
+      {
+        "title": "Embrapa Milho e Sorgo — Sorgo: 500 perguntas, 500 respostas",
+        "url": "https://www.infoteca.cnptia.embrapa.br/infoteca/bitstream/doc/1015482/1/500-perguntas-sorgo.pdf"
+      }
+    ],
+    "zarc_names": [
+      "Sorgo",
+      "Sorgo granífero",
+      "Sorgo Granífero 2ª Safra"
+    ]
+  },
+  {
+    "id": "oat",
+    "name": "Aveia branca",
+    "scientific_name": "Avena sativa",
+    "family": "Poaceae",
+    "purposes": [
+      "Grãos",
+      "Forragem",
+      "Cobertura do solo"
+    ],
+    "climate_requirements": "Caracterizada como gramínea anual de estação fria. A época depende da finalidade de uso e da região.",
+    "restrictions": [
+      "Confirme a espécie e a finalidade de cultivo antes de aplicar uma janela oficial.",
+      "A categoria Aveia do ZARC abrange diferentes espécies. Confira a cultivar na portaria."
+    ],
+    "rotation_roles": [
+      "Cobertura em sistemas de inverno",
+      "Diversificação com gramínea"
+    ],
+    "references": [
+      {
+        "title": "Embrapa Clima Temperado — Forrageiras",
+        "url": "https://www.embrapa.br/web/clima-temperado/forrageiras"
+      },
+      {
+        "title": "Embrapa — Adubação verde e plantas de cobertura no Brasil",
+        "url": "https://www.alice.cnptia.embrapa.br/alice/bitstream/doc/1153241/1/ADUBACAO-VERDE-VOL-01-ed02-2023.pdf"
+      },
+      {
+        "title": "MAPA — Portarias vigentes do ZARC de São Paulo",
+        "url": "https://www.gov.br/agricultura/pt-br/assuntos/riscos-seguro/programa-nacional-de-zoneamento-agricola-de-risco-climatico/portarias/safra-vigente/sao-paulo"
+      }
+    ],
+    "zarc_names": [
+      "Aveia branca",
+      "Aveia"
+    ]
+  },
+  {
+    "id": "sunn_hemp",
+    "name": "Crotalária-júncea",
+    "scientific_name": "Crotalaria juncea",
+    "family": "Fabaceae",
+    "purposes": [
+      "Adubação verde",
+      "Cobertura do solo"
+    ],
+    "climate_requirements": "Espécie de estação quente para cobertura e adubação verde. A implantação depende da época e das condições locais.",
+    "restrictions": [
+      "As informações documentadas aplicam-se à espécie Crotalaria juncea."
+    ],
+    "rotation_roles": [
+      "Produção de biomassa",
+      "Fixação biológica de nitrogênio"
+    ],
+    "references": [
+      {
+        "title": "Embrapa — Adubação verde e plantas de cobertura no Brasil",
+        "url": "https://www.alice.cnptia.embrapa.br/alice/bitstream/doc/1153241/1/ADUBACAO-VERDE-VOL-01-ed02-2023.pdf"
+      }
+    ],
+    "zarc_names": [
+      "Crotalária-júncea"
+    ]
+  }
+]

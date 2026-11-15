@@ -1,0 +1,18 @@
+from typing import Annotated
+
+from fastapi import APIRouter, Query
+
+from app.api.dependencies import LocationDependency, ServiceDependency
+from app.schemas.environmental import WeatherForecast
+from app.services.open_meteo import get_weather_forecast
+
+router = APIRouter(prefix="/weather", tags=["Meteorologia"])
+
+
+@router.get("/forecast", summary="Consultar estimativas atuais e a previsão do Open-Meteo")
+async def forecast(
+    location: LocationDependency,
+    services: ServiceDependency,
+    days: Annotated[int, Query(ge=1, le=16, description="Número de dias, incluindo hoje.")] = 7,
+) -> WeatherForecast:
+    return await get_weather_forecast(services.client, services.settings, location, days)

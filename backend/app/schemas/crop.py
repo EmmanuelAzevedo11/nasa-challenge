@@ -1,0 +1,173 @@
+import calendar
+from datetime import date
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, ValidationInfo, field_validator
+
+from app.schemas.environmental import DatasetStatus
+from app.schemas.location import Coordinates, Location
+
+SeasonYear = Annotated[int, Field(ge=1981, le=2100)]
+ConditionCode = Annotated[int, Field(ge=0, le=999)]
+RiskPercent = Literal[20, 30, 40]
+ZarcStatus = Literal[
+    "available", "season_unavailable", "municipality_unresolved",
+    "no_municipality_records", "no_crop_records", "no_matching_conditions",
+]
+Classification = Literal[
+    "potentially_favorable", "restricted", "unfavorable", "insufficient_data"
+]
+
+
+class Reference(BaseModel):
+    title: str
+    url: HttpUrl
+
+
+class AirTemperatureRange(BaseModel):
+    minimum: float
+    maximum: float
+
+
+class Crop(BaseModel):
+    id: str
+    name: str
+    scientific_name: str
+    family: str
+    purposes: list[str]
+    climate_requirements: str
+    water_requirements: str | None = None
+    restrictions: list[str]
+    rotation_roles: list[str]
+    air_temperature_c: AirTemperatureRange | None = None
+    references: list[Reference]
+    zarc_names: list[str]
+
+
+class ZarcConditions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    soil_code: ConditionCode | None = None
+    cultivar_group_code: ConditionCode | None = None
+    management_code: ConditionCode | None = None
+    climate_code: ConditionCode | None = None
+    management_level_code: ConditionCode | None = None
+    productivity: str | None = Field(default=None, min_length=1, max_length=80)
+
+
+class SuitabilityRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    location: Coordinates
+    planting_month: int = Field(ge=1, le=12)
+    planting_year: int = Field(ge=1982, le=2100)
+    planting_day: int | None = Field(default=None, ge=1, le=31)
+    season_start_year: SeasonYear | None = None
+    zarc_conditions: ZarcConditions = Field(default_factory=ZarcConditions)
+
+    @field_validator("planting_day")
+    @classmethod
+    def validate_day(cls, value: int | None, info: ValidationInfo) -> int | None:
+        year = info.data.get("planting_year")
+        month = info.data.get("planting_month")
+        if value is not None and year is not None and month is not None:
+            if value > calendar.monthrange(year, month)[1]:
+                raise ValueError("O dia informado deve existir no mês e ano selecionados.")
+        return value
+
+    @field_validator("season_start_year")
+    @classmethod
+    def validate_season(cls, value: int | None, info: ValidationInfo) -> int | None:
+        year = info.data.get("planting_year")
+        if value is not None and year is not None and year not in (value, value + 1):
+            raise ValueError("O ano civil do plantio deve pertencer à safra selecionada.")
+        return value
+
+    @property
+    def season(self) -> int:
+        if self.season_start_year is not None:
+            return self.season_start_year
+        return self.planting_year - int(self.planting_month <= 6)
+
+
+class ZarcPeriod(BaseModel):
+    decendio: int
+    start_on: date
+    end_on: date
+    status: Literal["window", "no_window", "unknown"]
+    risk_percent: RiskPercent | None = None
+    source_value: str | None = None
+
+
+class ZarcScenario(BaseModel):
+    crop_name: str
+    crop_code: str
+    conditions: ZarcConditions
+    missing_conditions: list[str]
+    ordinance: str | None
+    periods: list[ZarcPeriod]
+
+
+class ZarcResult(BaseModel):
+    status: ZarcStatus
+    source: str = "MAPA — ZARC Tábua de Risco"
+    source_url: HttpUrl
+    season: str
+    scenarios: list[ZarcScenario] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+
+
+class MunicipalityCoverage(BaseModel):
+    ibge_code: str
+    name: str
+    crops: list[str]
+
+
+class ZarcCoverage(BaseModel):
+    source: str = "MAPA — ZARC Tábua de Risco"
+    source_url: HttpUrl
+    available_seasons: list[str]
+    season: str
+    status: Literal["available", "unavailable"]
+    municipalities: list[MunicipalityCoverage]
+    crops: list[str]
+
+
+class MonthlyClimate(BaseModel):
+    source: str = "NASA POWER"
+    data_type: Literal["historical"] = "historical"
+    status: DatasetStatus
+    reference_start: date
+    reference_end: date
+    expected_days: int
+    temperature_days: int
+    precipitation_days: int
+    mean_air_temperature_c: float | None
+    total_precipitation_mm: float | None
+    spatial_resolution: str
+
+
+class CropAssessment(BaseModel):
+    crop_id: str
+    name: str
+    classification: Classification
+    climate_requirements: str
+    water_requirements: str | None
+    favorable_factors: list[str]
+    restrictions: list[str]
+    data_considered: list[str]
+    zarc: ZarcResult
+    references: list[Reference]
+    limitations: list[str]
+
+
+class SuitabilityResponse(BaseModel):
+    location: Location
+    planting_month: int
+    planting_year: int
+    planting_day: int | None
+    season: str
+    season_inferred: bool
+    climate: MonthlyClimate
+    alternatives: list[CropAssessment]
+    limitations: list[str]

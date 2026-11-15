@@ -1,0 +1,15 @@
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+
+class Coordinates(BaseModel):
+    latitude: float = Field(ge=-90, le=90, description="Latitude WGS84 em graus decimais.")
+    longitude: float = Field(ge=-180, le=180, description="Longitude WGS84 em graus decimais.")
+
+
+class Location(Coordinates):
+    municipality: str | None = None
+    municipality_ibge_code: str | None = None
+    state: Literal["SP"] = "SP"
+    boundary_source: Literal["IBGE"] = "IBGE"

@@ -1,0 +1,78 @@
+import httpx
+import pytest
+from fastapi.testclient import TestClient
+
+from app.core.config import Settings
+from app.main import create_app
+
+ITAPETININGA = {"latitude": -23.5886, "longitude": -48.0483}
+
+
+@pytest.fixture
+def make_client(tmp_path):
+    def factory(handler, zarc_data_dir=tmp_path):
+        return TestClient(create_app(
+            Settings(app_env="test", zarc_data_dir=zarc_data_dir, _env_file=None),
+            transport=httpx.MockTransport(handler),
+        ))
+
+    return factory
+
+
+@pytest.fixture
+def power_payload():
+    def factory(request):
+        start, end = request.url.params["start"], request.url.params["end"]
+        values = {
+            "T2M": 23.5, "T2M_MIN": 15, "T2M_MAX": 30,
+            "PRECTOTCORR": 0, "RH2M": 80, "WS10M": 2,
+        }
+        return {
+            "header": {"fill_value": -888, "time_standard": "LST"},
+            "parameters": {
+                "T2M": {"units": "C"},
+                "PRECTOTCORR": {"units": "mm/day"},
+                "WS10M": {"units": "m/s"},
+            },
+            "properties": {
+                "parameter": {
+                    parameter: {start: value, end: -888}
+                    for parameter, value in values.items()
+                }
+            },
+        }
+
+    return factory
+
+
+@pytest.fixture
+def forecast_payload():
+    return {
+        "latitude": -23.6,
+        "longitude": -48.05,
+        "timezone": "America/Sao_Paulo",
+        "current": {
+            "time": "2026-11-14T12:00",
+            "interval": 900,
+            "temperature_2m": 24,
+            "precipitation": 0,
+            "relative_humidity_2m": 82,
+            "wind_speed_10m": 12,
+            "wind_gusts_10m": 30,
+            "soil_moisture_0_to_1cm": 0.4,
+            "soil_moisture_3_to_9cm": 0.43,
+        },
+        "current_units": {"precipitation": "mm", "soil_moisture_0_to_1cm": "m³/m³"},
+        "daily": {
+            "time": ["2026-11-14", "2026-11-15"],
+            "temperature_2m_min": [15, 16],
+            "temperature_2m_max": [30, None],
+            "temperature_2m_mean": [23, 22],
+            "relative_humidity_2m_mean": [80, 81],
+            "precipitation_sum": [5, 0],
+            "precipitation_probability_max": [80, 12],
+            "wind_speed_10m_max": [25, 21],
+            "wind_gusts_10m_max": [41],
+        },
+        "daily_units": {"wind_gusts_10m_max": "km/h", "precipitation_sum": "mm"},
+    }

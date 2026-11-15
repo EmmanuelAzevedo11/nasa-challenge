@@ -1,0 +1,15 @@
+from fastapi import APIRouter
+
+from app.api.routes import ai, climate, crops, indicators, regions, weather
+from app.schemas.environmental import ErrorResponse
+
+router = APIRouter(
+    prefix="/api/v1",
+    responses={422: {"model": ErrorResponse, "description": "Coordenadas ou período inválidos."}},
+)
+router.include_router(regions.router)
+router.include_router(weather.router)
+router.include_router(climate.router)
+router.include_router(crops.router)
+router.include_router(indicators.router)
+router.include_router(ai.router)

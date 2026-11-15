@@ -1,0 +1,70 @@
+import asyncio
+
+import httpx
+import pytest
+
+from app.core import cache
+from app.core.http_client import ProviderClient, ProviderError
+
+
+@pytest.mark.asyncio
+async def test_cache_reuses_in_flight_requests_and_expires(monkeypatch):
+    now = 0
+    calls = 0
+
+    async def handler(_):
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0)
+        return httpx.Response(200, json={"number": calls})
+
+    monkeypatch.setattr(cache, "monotonic", lambda: now)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        provider = ProviderClient(http, retries=1, max_entries=4)
+
+        async def load():
+            return await provider.get("Teste", "https://example.org", {}, 15, lambda p: p["number"])
+
+        assert await asyncio.gather(load(), load(), load()) == [1, 1, 1]
+        now = 16
+        assert await load() == 2
+        assert calls == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 401, 403, 429, 502, 503])
+async def test_retries_only_transient_http_errors(status):
+    calls = 0
+
+    async def handler(_):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(status) if calls == 1 else httpx.Response(200, json={"number": 2})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        provider = ProviderClient(http, retries=1, max_entries=4)
+        args = ("Teste", "https://example.org", {}, 15, lambda payload: payload["number"])
+        if status in {502, 503}:
+            assert await provider.get(*args) == 2
+            assert calls == 2
+        else:
+            with pytest.raises(ProviderError):
+                await provider.get(*args)
+            assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_retries_transport_timeout():
+    calls = 0
+
+    async def handler(request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ReadTimeout("Tempo de teste", request=request)
+        return httpx.Response(200, json={"ok": True})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        provider = ProviderClient(http, retries=1, max_entries=4)
+        assert await provider.get("Teste", "https://example.org", {}, 15, lambda p: p["ok"])
+    assert calls == 2

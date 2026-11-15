@@ -1,0 +1,29 @@
+from app.core.config import Settings
+from app.core.http_client import ProviderClient, ProviderError
+from app.schemas.indicators import TerrainResponse
+from app.schemas.location import Location
+from app.services.environmental_data import numeric
+
+SOURCE_URL = "https://www.opentopodata.org/datasets/srtm/"
+
+
+def parse_elevation(payload: dict) -> float | None:
+    rows = payload["results"]
+    if payload.get("status") != "OK" or len(rows) != 1 or rows[0]["dataset"] != "srtm90m":
+        raise ValueError("Resposta de altitude inesperada.")
+    return numeric(rows[0]["elevation"])
+
+
+async def get_terrain(client: ProviderClient, settings: Settings, location: Location) -> TerrainResponse:
+    try:
+        elevation = await client.get(
+            "Open Topo Data", f"{str(settings.opentopodata_base_url).rstrip('/')}/v1/srtm90m",
+            {"locations": f"{location.latitude},{location.longitude}"}, 86400, parse_elevation,
+        )
+        status = "available" if elevation is not None else "insufficient_data"
+    except ProviderError:
+        elevation, status = None, "provider_error"
+    return TerrainResponse(
+        location=location, elevation_m=elevation, status=status,
+        limitations=["Altitude extraída da grade SRTM. A avaliação de declividade exige dados adicionais."],
+    )

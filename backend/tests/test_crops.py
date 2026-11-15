@@ -1,0 +1,230 @@
+import calendar
+import csv
+from datetime import date, timedelta
+
+import httpx
+import pytest
+
+from app.schemas.crop import SuitabilityRequest
+from app.services.crop_analysis import climate_period
+from app.services.zarc import DECENDIOS, import_csv
+from conftest import ITAPETININGA
+
+
+@pytest.fixture
+def official_format(tmp_path):
+    path = tmp_path / "source.csv"
+    fields = [
+        "Nome_cultura", "SafraIni", "SafraFin", "Cod_Cultura", "Cod_Ciclo", "Cod_Solo",
+        "geocodigo", "UF", "municipio", "Cod_Clima", "Nome_Clima", "Cod_Outros_Manejos",
+        "Nome_Outros_Manejos", "Produtividade", "Cod_NM", "Cod_Munic", "Portaria",
+        *DECENDIOS,
+    ]
+    row = dict.fromkeys(fields, "")
+    row.update(
+        Nome_cultura="SOJA", SafraIni=2026, SafraFin=2027, Cod_Cultura="001",
+        Cod_Ciclo=20, Cod_Solo=14, geocodigo="3522307", UF="SP",
+        municipio="Itapetininga", Cod_Clima=0, Cod_Outros_Manejos=1,
+        Cod_Munic="035934", Portaria="Portaria de teste",
+    )
+    row.update(dict.fromkeys(DECENDIOS, "0"))
+    row.update(dec28="20", dec29="30")
+    restricted = {**row, "Cod_Solo": 13, "dec28": 40, "dec30": ""}
+    elsewhere = {**row, "UF": "PR", "geocodigo": "4106902"}
+    with path.open("w", encoding="utf-8-sig", newline="") as output:
+        writer = csv.DictWriter(output, fieldnames=fields, delimiter=";")
+        writer.writeheader()
+        writer.writerows([row, restricted, elsewhere])
+    return path
+
+
+@pytest.fixture
+def zarc_directory(tmp_path, official_format):
+    directory = tmp_path / "zarc"
+    path, count = import_csv(official_format, directory, 2026)
+    assert count == 2
+    assert path.name == "2026-2027.csv.gz"
+    return directory
+
+
+def nasa_month(request, *, missing_rain=False, temperature=24):
+    end = date.fromisoformat(request.url.params["end"])
+    days = {
+        (end - timedelta(days=offset)).strftime("%Y%m%d"): temperature
+        for offset in range(end.day)
+    }
+    rain = dict.fromkeys(days, 2)
+    if missing_rain:
+        rain.pop(next(iter(rain)))
+    return httpx.Response(200, json={
+        "parameters": {"T2M": {"units": "C"}, "PRECTOTCORR": {"units": "mm/day"}},
+        "properties": {"parameter": {"T2M": days, "PRECTOTCORR": rain}},
+    })
+
+
+def plan(**values):
+    return {
+        "location": ITAPETININGA,
+        "planting_year": 2026,
+        "planting_month": 10,
+        **values,
+    }
+
+
+def soybean(response):
+    assert response.status_code == 200
+    return next(
+        crop for crop in response.json()["alternatives"]
+        if crop["crop_id"] == "soybean"
+    )
+
+
+def test_catalog_and_zarc_coverage(make_client, zarc_directory):
+    with make_client(lambda _: pytest.fail("Chamada externa inesperada."), zarc_directory) as client:
+        catalog = client.get("/api/v1/crops").json()
+        coverage = client.get("/api/v1/crops/zarc", params={"season_start_year": 2026}).json()
+        empty = client.get("/api/v1/crops/zarc", params={"season_start_year": 2027}).json()
+    assert {crop["id"] for crop in catalog} == {"soybean", "corn", "sorghum", "oat", "sunn_hemp"}
+    assert all(crop["references"] for crop in catalog)
+    assert coverage["status"] == "available"
+    assert coverage["available_seasons"] == ["2026/2027"]
+    assert coverage["municipalities"] == [{
+        "ibge_code": "3522307", "name": "Itapetininga", "crops": ["SOJA"],
+    }]
+    assert empty["status"] == "unavailable" and not empty["municipalities"]
+
+
+def test_complete_planting_assessment_with_cors(make_client, zarc_directory):
+    def handler(request):
+        assert request.url.params["end"] == "20251031"
+        assert request.url.params["community"] == "AG"
+        return nasa_month(request)
+
+    with make_client(handler, zarc_directory) as client:
+        preflight = client.options("/api/v1/crops/suitability", headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        })
+        response = client.post("/api/v1/crops/suitability", json=plan(
+            planting_day=5,
+            zarc_conditions={"soil_code": 14, "cultivar_group_code": 20, "management_code": 1},
+        ))
+    assert preflight.status_code == 200
+    body = response.json()
+    assert body["location"]["municipality_ibge_code"] == "3522307"
+    assert body["climate"]["status"] == "available"
+    assert body["climate"]["mean_air_temperature_c"] == 24
+    assert body["climate"]["total_precipitation_mm"] == 62
+    assert body["climate"]["temperature_days"] == 31
+    soy = soybean(response)
+    assert soy["classification"] == "potentially_favorable"
+    assert len(soy["zarc"]["scenarios"]) == 1
+    scenario = soy["zarc"]["scenarios"][0]
+    assert scenario["conditions"]["climate_code"] == 0
+    assert scenario["missing_conditions"] == []
+    assert scenario["periods"] == [{
+        "decendio": 28, "start_on": "2026-10-01", "end_on": "2026-10-10",
+        "status": "window", "risk_percent": 20, "source_value": "20",
+    }]
+
+
+def test_whole_month_preserves_conditions_windows_and_unknowns(make_client, zarc_directory):
+    with make_client(nasa_month, zarc_directory) as client:
+        response = client.post("/api/v1/crops/suitability", json=plan())
+    soy = soybean(response)
+    assert soy["classification"] == "restricted"
+    scenarios = soy["zarc"]["scenarios"]
+    assert len(scenarios) == 2
+    assert set(scenarios[0]["missing_conditions"]) == {
+        "soil_code", "cultivar_group_code", "management_code",
+    }
+    assert [p["risk_percent"] for p in scenarios[0]["periods"]] == [20, 30, None]
+    assert [p["risk_percent"] for p in scenarios[1]["periods"]] == [40, 30, None]
+    assert scenarios[0]["periods"][-1]["status"] == "no_window"
+    assert scenarios[1]["periods"][-1]["status"] == "unknown"
+    assert scenarios[1]["periods"][-1]["end_on"] == "2026-10-31"
+
+
+def test_explicit_no_window_is_unfavorable_only_for_queried_context(make_client, zarc_directory):
+    with make_client(nasa_month, zarc_directory) as client:
+        response = client.post("/api/v1/crops/suitability", json=plan(planting_month=11))
+    assert soybean(response)["classification"] == "unfavorable"
+
+
+def test_missing_season_does_not_fall_back_and_partial_rain_stays_null(make_client, zarc_directory):
+    def handler(request):
+        return nasa_month(request, missing_rain=True)
+
+    with make_client(handler, zarc_directory) as client:
+        response = client.post("/api/v1/crops/suitability", json=plan(planting_year=2027))
+    soy = soybean(response)
+    assert soy["classification"] == "insufficient_data"
+    assert soy["zarc"]["status"] == "season_unavailable"
+    assert soy["zarc"]["season"] == "2027/2028"
+    climate = response.json()["climate"]
+    assert climate["precipitation_days"] == calendar.monthrange(2026, 10)[1] - 1
+    assert climate["total_precipitation_mm"] is None
+    assert climate["status"] == "partial"
+
+
+def test_zarc_survives_nasa_error_and_filters_missing_combinations(make_client, zarc_directory):
+    with make_client(lambda _: httpx.Response(403), zarc_directory) as client:
+        response = client.post("/api/v1/crops/suitability", json=plan(planting_day=5))
+        no_soil = client.post("/api/v1/crops/suitability", json=plan(zarc_conditions={"soil_code": 2}))
+    assert response.json()["climate"]["status"] == "provider_error"
+    assert soybean(response)["classification"] == "restricted"
+    assert soybean(response)["zarc"]["status"] == "available"
+    assert soybean(no_soil)["zarc"]["status"] == "no_matching_conditions"
+
+
+@pytest.mark.parametrize("values, code", [
+    ({"planting_month": 13}, "invalid_request"),
+    ({"planting_month": 2, "planting_day": 30}, "invalid_request"),
+    ({"season_start_year": 2024}, "invalid_request"),
+    ({"location": {"latitude": -18, "longitude": -48}}, "outside_sao_paulo"),
+])
+def test_invalid_requests_avoid_provider_calls(make_client, values, code):
+    with make_client(lambda _: pytest.fail("Chamada externa inesperada.")) as client:
+        response = client.post("/api/v1/crops/suitability", json=plan(**values))
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == code
+
+
+def test_calendar_year_and_leap_year():
+    request = SuitabilityRequest.model_validate(plan(planting_year=2025, planting_month=2))
+    assert request.season == 2024
+    assert climate_period(request, date(2026, 11, 14)) == (date(2024, 2, 1), date(2024, 2, 29))
+
+
+def test_bad_import_leaves_previous_snapshot_intact(zarc_directory, official_format):
+    snapshot = zarc_directory / "2026-2027.csv.gz"
+    before = snapshot.read_bytes()
+    official_format.write_text("invalid\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="Cabeçalho ZARC inválido"):
+        import_csv(official_format, zarc_directory, 2026)
+    assert snapshot.read_bytes() == before
+    assert list(zarc_directory.iterdir()) == [snapshot]
+
+
+def test_rotation_uses_zarc_window_and_distinguishes_succession(make_client, zarc_directory):
+    body = plan(
+        previous_crop="corn", objective="soil_conservation", previous_planting_date="2026-09-01",
+        planting_day=5, zarc_conditions={"soil_code": 14, "cultivar_group_code": 20, "management_code": 1},
+    )
+    with make_client(nasa_month, zarc_directory) as client:
+        response = client.post("/api/v1/crops/rotation", json=body)
+        absent = client.post("/api/v1/crops/rotation", json={**body, "planting_year": 2027})
+    assert response.status_code == 200
+    strategy, = response.json()["strategies"]
+    assert strategy["strategy_type"] == "succession"
+    assert [crop["crop_id"] for crop in strategy["sequence"]] == ["corn", "soybean"]
+    assert strategy["assessment"]["zarc"]["scenarios"][0]["periods"][0]["decendio"] == 28
+    assert absent.json()["status"] == "insufficient_data" and absent.json()["strategies"] == []
+
+
+def test_rotation_rejects_unknown_previous_crop_without_provider_call(make_client):
+    with make_client(lambda _: pytest.fail("Chamada externa inesperada.")) as client:
+        response = client.post("/api/v1/crops/rotation", json=plan(previous_crop="invalid", objective="diversification"))
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "unknown_crop"

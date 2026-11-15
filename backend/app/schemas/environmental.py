@@ -1,0 +1,122 @@
+from datetime import date as Date, datetime
+from enum import IntEnum
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+from app.schemas.location import Coordinates, Location
+
+MetricStatus = Literal["available", "unavailable", "insufficient_data", "provider_error"]
+DatasetStatus = MetricStatus | Literal["partial"]
+DataType = Literal["observed", "historical", "estimated", "forecast"]
+
+
+class HistoryDays(IntEnum):
+    MONTH = 30
+    QUARTER = 90
+    HALF_YEAR = 180
+    YEAR = 365
+
+
+class ErrorDetail(BaseModel):
+    code: str
+    message: str
+
+
+class ErrorResponse(BaseModel):
+    detail: ErrorDetail
+
+
+class MetricDefinition(BaseModel):
+    unit: str | None
+    provider_parameter: str
+    height_m: int | None = None
+
+
+class Metric(MetricDefinition):
+    value: float | None
+    source: str
+    data_type: DataType
+    reference_time: datetime | None
+    status: MetricStatus
+    depth_cm: tuple[int, int] | None = None
+
+
+class HistoricalDay(BaseModel):
+    date: Date
+    temperature: float | None
+    temperature_min: float | None
+    temperature_max: float | None
+    precipitation: float | None
+    relative_humidity: float | None
+    wind_speed: float | None
+
+
+class ClimateHistory(BaseModel):
+    location: Location
+    source: Literal["NASA POWER"] = "NASA POWER"
+    data_type: Literal["historical"] = "historical"
+    time_standard: Literal["LST"] = "LST"
+    spatial_resolution: str = "0.5° latitude × 0.625° longitude (nominal)"
+    status: DatasetStatus
+    message: str | None = None
+    requested_days: HistoryDays
+    requested_start: Date
+    requested_end: Date
+    last_available_date: Date | None = None
+    metrics: dict[str, MetricDefinition]
+    daily: list[HistoricalDay] = Field(default_factory=list)
+    limitations: list[str]
+
+
+class CurrentWeather(BaseModel):
+    status: DatasetStatus
+    reference_time: datetime | None
+    precipitation_interval_seconds: int | None
+    temperature: Metric
+    relative_humidity: Metric
+    precipitation: Metric
+    wind_speed: Metric
+    wind_gusts: Metric
+    soil_moisture: list[Metric]
+
+
+class ForecastDay(BaseModel):
+    date: Date
+    temperature_min: float | None
+    temperature_max: float | None
+    temperature: float | None
+    relative_humidity: float | None
+    precipitation: float | None
+    precipitation_probability_max: float | None
+    wind_speed_max: float | None
+    wind_gusts_max: float | None
+    reference_evapotranspiration: float | None = None
+
+
+class WeatherForecast(BaseModel):
+    location: Location
+    source: Literal["Open-Meteo"] = "Open-Meteo"
+    data_type: Literal["forecast"] = "forecast"
+    timezone: str = "America/Sao_Paulo"
+    spatial_resolution: str | None = None
+    model_grid_location: Coordinates | None = None
+    status: DatasetStatus
+    message: str | None = None
+    requested_days: int
+    current: CurrentWeather
+    daily_metrics: dict[str, MetricDefinition]
+    daily: list[ForecastDay] = Field(default_factory=list)
+    limitations: list[str]
+
+
+class RegionSummary(BaseModel):
+    location: Location
+    status: DatasetStatus
+    weather: CurrentWeather
+    climate: ClimateHistory
+    limitations: list[str]
+
+
+class Health(BaseModel):
+    status: Literal["ok"] = "ok"

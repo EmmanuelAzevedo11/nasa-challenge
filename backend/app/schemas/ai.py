@@ -1,0 +1,53 @@
+from datetime import date
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+
+from app.schemas.crop import Reference, SeasonYear, ZarcConditions
+from app.schemas.location import Coordinates, Location
+from app.schemas.rotation import RotationObjective
+
+MessageText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
+CropId = Annotated[str, Field(min_length=1, max_length=40)]
+
+
+class ToolArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class PlantingContext(ToolArguments):
+    planting_month: int | None = Field(None, ge=1, le=12)
+    planting_year: int | None = Field(None, ge=1982, le=2100)
+    planting_day: int | None = Field(None, ge=1, le=31)
+    season_start_year: SeasonYear | None = None
+    zarc_conditions: ZarcConditions | None = None
+
+
+class ChatContext(PlantingContext):
+    previous_crop: CropId | None = None
+    previous_planting_date: date | None = None
+    objective: RotationObjective | None = None
+
+
+class ChatMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["user", "assistant"]
+    content: MessageText
+
+
+class ChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message: MessageText
+    location: Coordinates | None = None
+    context: ChatContext = Field(default_factory=ChatContext)
+    history: list[ChatMessage] = Field(default_factory=list, max_length=8)
+
+
+class ChatResponse(BaseModel):
+    status: Literal["available", "partial", "unavailable", "rate_limited", "provider_error"]
+    answer: str
+    sources: list[Reference] = Field(default_factory=list)
+    location: Location | None = None
+    limitations: list[str] = Field(default_factory=list)

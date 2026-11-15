@@ -1,0 +1,63 @@
+from pathlib import Path
+from typing import Literal
+
+from pydantic import Field, HttpUrl, SecretStr, TypeAdapter, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+BACKEND_DIR = Path(__file__).resolve().parents[2]
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_ignore_empty=True,
+        env_file=BACKEND_DIR / ".env", env_file_encoding="utf-8", extra="ignore"
+    )
+
+    app_name: str = "AgroSat SP"
+    app_env: Literal["development", "test", "production"] = "development"
+    frontend_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    nasa_power_base_url: HttpUrl = HttpUrl("https://power.larc.nasa.gov")
+    open_meteo_base_url: HttpUrl = HttpUrl("https://api.open-meteo.com")
+    gemini_api_key: SecretStr | None = None
+    gemini_model: str = "gemini-3.1-flash-lite"
+    gemini_max_requests_per_minute: int = Field(8, ge=1, le=120)
+    gemini_timeout_seconds: float = Field(35, gt=0, le=120)
+    modis_base_url: HttpUrl = HttpUrl("https://modis.ornl.gov/rst/api/v1")
+    opentopodata_base_url: HttpUrl = HttpUrl("https://api.opentopodata.org")
+    soilgrids_wcs_url: HttpUrl = HttpUrl("https://maps.isric.org/mapserv")
+    ana_station_url: HttpUrl = HttpUrl(
+        "https://www.snirh.gov.br/arcgis/rest/services/SGH/REDE_HIDROMETEOROLOGICA_NACIONAL/MapServer/3/query"
+    )
+    http_timeout_seconds: float = Field(10, gt=0, le=60)
+    http_retries: int = Field(1, ge=0, le=2)
+    cache_ttl_seconds: int = Field(900, ge=1)
+    climate_cache_ttl_seconds: int = Field(21600, ge=1)
+    zarc_data_dir: Path = Path("app/data/zarc")
+    cache_max_entries: int = Field(512, ge=1)
+
+    @field_validator("frontend_origins")
+    @classmethod
+    def validate_origins(cls, value: str) -> str:
+        parse_url = TypeAdapter(HttpUrl).validate_python
+        origins = []
+        for origin in value.split(","):
+            origin = origin.strip()
+            if not origin:
+                continue
+            url = parse_url(origin)
+            if url.path != "/" or url.query is not None or url.fragment is not None:
+                raise ValueError("Cada origem CORS deve conter apenas esquema, host e porta.")
+            if url.username is not None or url.password is not None:
+                raise ValueError("Origens CORS devem ser URLs sem credenciais.")
+            default_port = 443 if url.scheme == "https" else 80
+            port = f":{url.port}" if url.port != default_port else ""
+            origins.append(f"{url.scheme}://{url.host}{port}")
+        return ",".join(dict.fromkeys(origins))
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return self.frontend_origins.split(",") if self.frontend_origins else []
+
+    @property
+    def resolved_zarc_data_dir(self) -> Path:
+        return BACKEND_DIR / self.zarc_data_dir

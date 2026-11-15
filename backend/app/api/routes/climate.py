@@ -1,0 +1,18 @@
+from typing import Annotated
+
+from fastapi import APIRouter, Query
+
+from app.api.dependencies import LocationDependency, ServiceDependency
+from app.schemas.environmental import ClimateHistory, HistoryDays
+from app.services.nasa_power import get_climate_history
+
+router = APIRouter(prefix="/climate", tags=["Histórico climático"])
+
+
+@router.get("/history", summary="Consultar o histórico diário da NASA POWER")
+async def history(
+    location: LocationDependency,
+    services: ServiceDependency,
+    days: Annotated[HistoryDays, Query(description="Janela em dias até ontem.")] = HistoryDays.MONTH,
+) -> ClimateHistory:
+    return await get_climate_history(services.client, services.settings, location, days)

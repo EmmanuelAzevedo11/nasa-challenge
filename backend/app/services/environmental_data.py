@@ -1,0 +1,18 @@
+import math
+from typing import Any
+
+
+def numeric(value: Any, missing: float | None = None) -> float | None:
+    if type(value) not in (float, int) or not math.isfinite(value) or value == missing:
+        return None
+    return float(value)
+
+
+def object_value(value: Any) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def source_unit(unit: Any) -> str | None:
+    if not isinstance(unit, str) or not unit.strip():
+        return None
+    return "°C" if unit.upper() == "C" else unit

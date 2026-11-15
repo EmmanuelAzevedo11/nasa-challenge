@@ -1,0 +1,40 @@
+from fastapi import APIRouter, Request
+
+from app.api.dependencies import ServiceDependency
+from app.schemas.crop import Crop, SeasonYear, SuitabilityRequest, SuitabilityResponse, ZarcCoverage
+from app.schemas.rotation import RotationRequest, RotationResponse
+from app.services.crop_rotation import analyze_rotation
+from app.services.crop_analysis import analyze_suitability
+from app.services.crop_catalog import get_crops
+
+router = APIRouter(prefix="/crops", tags=["Planejamento agrícola"])
+
+
+@router.get("", summary="Consultar o catálogo agronômico")
+def list_crops() -> list[Crop]:
+    return get_crops()
+
+
+@router.get("/zarc", summary="Consultar a cobertura da Tábua de Risco do ZARC")
+def zarc_coverage(request: Request, season_start_year: SeasonYear) -> ZarcCoverage:
+    return request.app.state.zarc.coverage(season_start_year)
+
+
+@router.post("/suitability", summary="Avaliar alternativas de plantio para a região")
+async def suitability(
+    request: Request, body: SuitabilityRequest, services: ServiceDependency
+) -> SuitabilityResponse:
+    location = request.app.state.boundaries.locate(body.location)
+    return await analyze_suitability(
+        services.client, services.settings, request.app.state.zarc, location, body
+    )
+
+
+@router.post("/rotation", summary="Avaliar alternativas para o próximo plantio")
+async def rotation(
+    request: Request, body: RotationRequest, services: ServiceDependency
+) -> RotationResponse:
+    location = request.app.state.boundaries.locate(body.location)
+    return await analyze_rotation(
+        services.client, services.settings, request.app.state.zarc, location, body
+    )

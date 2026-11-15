@@ -1,0 +1,110 @@
+import asyncio
+import json
+import logging
+from collections.abc import Callable
+from typing import Any, cast
+
+import httpx
+
+from app.core.cache import TTLCache
+
+logger = logging.getLogger(__name__)
+TRANSIENT_STATUS = {408, 500, 502, 503, 504}
+
+
+class ProviderError(Exception):
+    pass
+
+
+class ProviderClient:
+    def __init__(self, http: httpx.AsyncClient, retries: int, max_entries: int):
+        self.http = http
+        self.retries = retries
+        self.cache = TTLCache[object](max_entries)
+
+    async def get[T](
+        self,
+        source: str,
+        url: str,
+        params: dict[str, str],
+        ttl: int,
+        parse: Callable[[Any], T],
+        *,
+        allow_array: bool = False,
+    ) -> T:
+        async def load() -> T:
+            payload = await self._get_json(source, url, params, allow_array)
+            try:
+                return parse(payload)
+            except (TypeError, ValueError, KeyError, OverflowError) as exc:
+                self._log_failure(source, "invalid_schema")
+                raise ProviderError() from exc
+
+        key = (source, url, tuple(sorted(params.items())), allow_array)
+        return cast(T, await self.cache.get_or_load(key, ttl, load))
+
+    async def get_bytes[T](
+        self, source: str, url: str, params: dict[str, str], ttl: int,
+        parse: Callable[[bytes], T],
+    ) -> T:
+        async def load() -> T:
+            response = await self._get_response(source, url, params, accept="image/tiff")
+            try:
+                if len(response.content) > 128 * 1024:
+                    raise ValueError("Resposta binária fora do limite.")
+                return parse(response.content)
+            except (OSError, ValueError, TypeError, OverflowError) as exc:
+                self._log_failure(source, "invalid_binary")
+                raise ProviderError() from exc
+
+        key = (source, url, tuple(sorted(params.items())), "bytes")
+        return cast(T, await self.cache.get_or_load(key, ttl, load))
+
+    async def _get_json(
+        self, source: str, url: str, params: dict[str, str], allow_array: bool,
+    ) -> dict | list:
+        response = await self._get_response(source, url, params, accept="application/json")
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            self._log_failure(source, "invalid_json")
+            raise ProviderError() from exc
+        if not isinstance(payload, dict) and not (allow_array and isinstance(payload, list)):
+            self._log_failure(source, "invalid_payload")
+            raise ProviderError()
+        return payload
+
+    async def _get_response(
+        self, source: str, url: str, params: dict[str, str], *, accept: str,
+    ) -> httpx.Response:
+        for attempt in range(self.retries + 1):
+            try:
+                response = await self.http.get(url, params=params, headers={"Accept": accept})
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                if status not in TRANSIENT_STATUS or attempt == self.retries:
+                    self._log_failure(source, "http_status", status)
+                    raise ProviderError() from exc
+            except (httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError) as exc:
+                if attempt == self.retries:
+                    self._log_failure(source, type(exc).__name__)
+                    raise ProviderError() from exc
+            except httpx.RequestError as exc:
+                self._log_failure(source, type(exc).__name__)
+                raise ProviderError() from exc
+            else:
+                return response
+
+            await asyncio.sleep(0.25 * (2 ** attempt))
+
+        raise ProviderError()
+
+    @staticmethod
+    def _log_failure(source: str, reason: str, status: int | None = None) -> None:
+        logger.warning(json.dumps({
+            "event": "provider_request_failed",
+            "provider": source,
+            "reason": reason,
+            "http_status": status,
+        }))

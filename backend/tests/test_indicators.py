@@ -1,0 +1,86 @@
+from io import BytesIO
+
+import httpx
+from PIL import Image
+
+from app.services.modis import NDVI_BAND, QUALITY_BAND
+from conftest import ITAPETININGA
+
+
+def test_ndvi_scales_and_excludes_cloud_and_fill_values(make_client):
+    def provider(request):
+        if request.url.path.endswith("/dates"):
+            assert request.headers["accept"] == "application/json"
+            return httpx.Response(200, json=[{"modis_date": f"A2026{day}"} for day in (273, 289, 305)])
+        if request.url.path.endswith("/bands"):
+            return httpx.Response(200, json={"bands": [NDVI_BAND, QUALITY_BAND]})
+        assert request.url.params["kmAboveBelow"] == request.url.params["kmLeftRight"] == "0"
+        assert request.url.params["startDate"] == "A2026273"
+        pixels = [
+            {"modis_date": f"A2026{day}", "band": band, "data": [value]}
+            for day, raw, qa in [(273, 5371, 0), (289, 7641, 3), (305, -3000, 0)]
+            for band, value in [(NDVI_BAND, raw), (QUALITY_BAND, qa)]
+        ]
+        return httpx.Response(200, json={"ncols": 1, "nrows": 1, "subset": pixels})
+
+    with make_client(provider) as client:
+        response = client.get("/api/v1/vegetation/ndvi", params=ITAPETININGA)
+    body = response.json()
+    assert body["status"] == "partial"
+    assert body["latest"]["value"] == 0.5371
+    assert [item["value"] for item in body["observations"]] == [0.5371, None, None]
+
+
+def test_soil_reads_pixel_scales_and_returns_partial_if_one_layer_fails(make_client):
+    buffer = BytesIO()
+    Image.new("I;16", (1, 1), 54).save(buffer, format="TIFF")
+
+    def provider(request):
+        if request.url.params["COVERAGE"] == "soc_0-5cm_mean":
+            return httpx.Response(500)
+        return httpx.Response(200, content=buffer.getvalue())
+
+    with make_client(provider) as client:
+        response = client.get("/api/v1/soil", params=ITAPETININGA)
+    body = response.json()
+    assert body["status"] == "partial"
+    props = {item["property"]: item for item in body["properties"]}
+    assert (props["ph_water"]["unit"], props["ph_water"]["value"]) == ("pH", 5.4)
+    assert props["organic_carbon"]["status"] == "provider_error"
+
+
+def test_extended_summary_isolates_providers(make_client, power_payload, forecast_payload):
+    def provider(request):
+        if "/temporal/daily" in request.url.path:
+            return httpx.Response(200, json=power_payload(request))
+        if request.url.path == "/v1/forecast":
+            return httpx.Response(200, json=forecast_payload)
+        if request.url.path == "/v1/srtm90m":
+            return httpx.Response(200, json={"status": "OK", "results": [{"dataset": "srtm90m", "elevation": 0}]})
+        return httpx.Response(404)
+
+    with make_client(provider) as client:
+        default = client.get("/api/v1/regions/summary", params=ITAPETININGA).json()
+        extended = client.get("/api/v1/regions/summary", params={**ITAPETININGA, "include_indicators": True}).json()
+    assert "indicators" not in default
+    assert extended["status"] == "partial"
+    assert extended["indicators"]["terrain"]["elevation_m"] == 0
+    assert extended["indicators"]["vegetation"]["status"] == "provider_error"
+    assert extended["indicators"]["soil"]["status"] == "provider_error"
+    risks = {item["type"]: item for item in extended["indicators"]["risks"]["indicators"]}
+    assert risks["frost"]["level"] == "insufficient_data"
+    assert risks["water_deficit"]["level"] == "insufficient_data"
+
+
+def test_risks_use_units_and_prefer_explicit_hazard_on_partial_forecast(make_client, forecast_payload):
+    forecast_payload["daily"]["temperature_2m_min"][0] = 0
+    forecast_payload["daily"]["precipitation_sum"][0] = 55
+    forecast_payload["daily"]["wind_gusts_10m_max"][0] = 105
+    with make_client(lambda _: httpx.Response(200, json=forecast_payload)) as client:
+        response = client.get("/api/v1/risks", params={**ITAPETININGA, "days": 2, "crop_id": "soybean"})
+    assert response.status_code == 200
+    risks = {item["type"]: item for item in response.json()["indicators"]}
+    assert risks["frost"]["level"] == "high"
+    assert risks["heavy_rain"]["level"] == "moderate"
+    assert risks["strong_wind"]["level"] == "high"
+    assert risks["heat"]["level"] == "insufficient_data"

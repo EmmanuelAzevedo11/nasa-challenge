@@ -1,0 +1,150 @@
+import datetime
+
+import httpx
+import pytest
+
+from conftest import ITAPETININGA
+
+
+def test_health_openapi_and_cors(make_client):
+    with make_client(lambda _: pytest.fail("Chamada externa inesperada.")) as client:
+        assert client.get("/health").json() == {"status": "ok"}
+        schema = client.get("/openapi.json").json()
+        assert set(schema["paths"]) == {
+            "/health", "/api/v1/regions/summary",
+            "/api/v1/weather/forecast", "/api/v1/climate/history",
+            "/api/v1/crops", "/api/v1/crops/zarc", "/api/v1/crops/suitability",
+            "/api/v1/crops/rotation", "/api/v1/ai/chat", "/api/v1/vegetation/ndvi",
+            "/api/v1/terrain", "/api/v1/soil", "/api/v1/hydrology", "/api/v1/risks",
+        }
+        allowed = client.get("/health", headers={"Origin": "http://localhost:5173"})
+        denied = client.get("/health", headers={"Origin": "https://example.org"})
+        assert allowed.headers["access-control-allow-origin"] == "http://localhost:5173"
+        assert "access-control-allow-origin" not in denied.headers
+
+
+@pytest.mark.parametrize(
+    ("query", "error_code"),
+    [
+        ({"latitude": -18, "longitude": -48}, "outside_sao_paulo"),
+        ({"latitude": -24.1, "longitude": -46.0}, "outside_sao_paulo"),
+        ({"latitude": 91, "longitude": -48}, "invalid_request"),
+        ({"latitude": -24, "longitude": -181}, "invalid_request"),
+        ({"latitude": "NaN", "longitude": -48}, "invalid_request"),
+        ({"longitude": -48}, "invalid_request"),
+        ({**ITAPETININGA, "days": 31}, "invalid_request"),
+    ],
+)
+def test_invalid_coordinates_or_days(make_client, query, error_code):
+    with make_client(lambda _: pytest.fail("Chamada externa inesperada.")) as client:
+        response = client.get("/api/v1/climate/history", params=query)
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == error_code
+
+
+@pytest.mark.parametrize("days", [30, 90, 180, 365])
+def test_history_normalizes_units_fill_and_recent_cutoff(make_client, power_payload, days):
+    def nasa_power(request):
+        assert request.url.params["community"] == "AG"
+        assert request.url.params["time-standard"] == "LST"
+        assert set(request.url.params["parameters"].split(",")) == {
+            "T2M", "T2M_MIN", "T2M_MAX", "PRECTOTCORR", "RH2M", "WS10M",
+        }
+        payload = power_payload(request)
+        start = datetime.datetime.strptime(request.url.params["start"], "%Y%m%d")
+        third_day = (start + datetime.timedelta(days=2)).strftime("%Y%m%d")
+        payload["properties"]["parameter"]["T2M"][third_day] = 25
+        payload["properties"]["parameter"]["PRECTOTCORR"][third_day] = None
+        return httpx.Response(200, json=payload)
+
+    with make_client(nasa_power) as client:
+        response = client.get("/api/v1/climate/history", params={**ITAPETININGA, "days": days})
+    assert response.status_code == 200
+    result = response.json()
+    assert result["location"]["municipality"] == "Itapetininga"
+    assert result["location"]["municipality_ibge_code"] == "3522307"
+    assert result["requested_days"] == days
+    assert (
+        datetime.date.fromisoformat(result["requested_end"])
+        - datetime.date.fromisoformat(result["requested_start"])
+    ).days == days - 1
+    assert result["data_type"] == "historical"
+    assert result["status"] == "partial"
+    assert result["last_available_date"] == result["daily"][-1]["date"]
+    assert len(result["daily"]) == 3
+    assert result["daily"][0]["precipitation"] == 0
+    assert result["daily"][1]["temperature"] is None
+    assert result["daily"][2]["precipitation"] is None
+    assert result["metrics"]["temperature"]["unit"] == "°C"
+    assert result["metrics"]["precipitation"]["unit"] == "mm/day"
+    assert result["metrics"]["wind_speed"]["unit"] == "m/s"
+
+
+def test_history_empty_series_is_insufficient(make_client):
+    with make_client(lambda _: httpx.Response(200, json={"properties": {"parameter": {}}})) as client:
+        body = client.get("/api/v1/climate/history", params=ITAPETININGA).json()
+    assert body["status"] == "insufficient_data"
+    assert body["last_available_date"] is None
+    assert body["daily"] == []
+
+
+def test_forecast_preserves_reference_time_units_and_missing_layers(make_client, forecast_payload):
+    def open_meteo(request):
+        assert request.url.params["forecast_days"] == "2"
+        assert request.url.params["timezone"] == "America/Sao_Paulo"
+        assert "soil_moisture_3_to_9cm" in request.url.params["current"]
+        return httpx.Response(200, json=forecast_payload)
+
+    with make_client(open_meteo) as client:
+        response = client.get("/api/v1/weather/forecast", params={**ITAPETININGA, "days": 2})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "partial"
+    assert body["data_type"] == "forecast"
+    assert body["current"]["reference_time"] == "2026-11-14T12:00:00-03:00"
+    assert body["current"]["temperature"]["data_type"] == "estimated"
+    assert body["current"]["precipitation"]["value"] == 0
+    assert body["current"]["precipitation_interval_seconds"] == 900
+    top, middle, bottom = body["current"]["soil_moisture"]
+    assert top["value"] == 0.4 and top["unit"] == "m³/m³" and top["depth_cm"] == [0, 1]
+    assert middle["value"] is None and middle["status"] == "insufficient_data"
+    assert bottom["depth_cm"] == [3, 9]
+    assert body["daily"][0]["precipitation_probability_max"] == 80
+    assert body["daily"][1]["wind_gusts_max"] is None
+    assert body["daily_metrics"]["wind_gusts_max"]["unit"] == "km/h"
+
+
+def test_partial_summary_survives_provider_failure(make_client, forecast_payload):
+    def handler(request):
+        if request.url.path == "/v1/forecast":
+            return httpx.Response(200, json=forecast_payload)
+        return httpx.Response(429)
+
+    with make_client(handler) as client:
+        response = client.get("/api/v1/regions/summary", params=ITAPETININGA)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "partial"
+    assert body["climate"]["status"] == "provider_error"
+    assert body["weather"]["temperature"]["status"] == "available"
+    assert body["weather"]["temperature"]["value"] == 24
+
+
+def test_error_payload_is_not_returned_or_cached(make_client, forecast_payload):
+    attempts = 0
+
+    def handler(_):
+        nonlocal attempts
+        attempts += 1
+        payload = {"error": True, "reason": "provider-internal detail"} if attempts == 1 else forecast_payload
+        return httpx.Response(200, json=payload)
+
+    with make_client(handler) as client:
+        failed = client.get("/api/v1/weather/forecast", params=ITAPETININGA)
+        assert failed.status_code == 200
+        assert failed.json()["status"] == "provider_error"
+        assert "provider-internal detail" not in failed.text
+        assert failed.json()["current"]["temperature"]["status"] == "provider_error"
+        recovered = client.get("/api/v1/weather/forecast", params=ITAPETININGA)
+        assert recovered.json()["current"]["temperature"]["value"] == 24
+    assert attempts == 2
