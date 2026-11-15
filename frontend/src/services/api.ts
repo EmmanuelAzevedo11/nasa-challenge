@@ -21,14 +21,16 @@ import {
 } from "./fastapi";
 import municipalities from "@/data/sp-municipalities.json";
 
-export const API_CONFIGURED = Boolean(import.meta.env["VITE_API_BASE_URL"]);
+const DEFAULT_API_BASE_URL = "https://nasa-challenge-nvrf.onrender.com";
+
+export const API_CONFIGURED = Boolean(import.meta.env["VITE_API_BASE_URL"] || DEFAULT_API_BASE_URL);
 
 async function request<T>(
   path: string,
   params?: Record<string, string | number>,
   body?: unknown,
 ): Promise<T> {
-  const base = import.meta.env["VITE_API_BASE_URL"];
+  const base = import.meta.env["VITE_API_BASE_URL"] || DEFAULT_API_BASE_URL;
   if (!base) throw new Error("O serviço de dados ainda não está conectado.");
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params ?? {})) query.set(key, String(value));

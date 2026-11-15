@@ -15,7 +15,7 @@ class Settings(BaseSettings):
 
     app_name: str = "AgroSat SP"
     app_env: Literal["development", "test", "production"] = "development"
-    frontend_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    frontend_origins: str = "https://nasa-challenge-nvrf.onrender.com,http://localhost:5173,http://127.0.0.1:5173"
     nasa_power_base_url: HttpUrl = HttpUrl("https://power.larc.nasa.gov")
     open_meteo_base_url: HttpUrl = HttpUrl("https://api.open-meteo.com")
     gemini_api_key: SecretStr | None = None
@@ -40,6 +40,9 @@ class Settings(BaseSettings):
             origin = origin.strip()
             if not origin:
                 continue
+            if origin == "*":
+                origins.append("*")
+                continue
             url = parse_url(origin)
             if url.path != "/" or url.query is not None or url.fragment is not None:
                 raise ValueError("Cada origem CORS deve conter apenas esquema, host e porta.")
@@ -53,6 +56,16 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> list[str]:
         return self.frontend_origins.split(",") if self.frontend_origins else []
+
+    @property
+    def cors_origin_regex(self) -> str | None:
+        if self.app_env == "test" or "*" in self.cors_origins:
+            return None
+        return (
+            r"^https?://(localhost|127\.0\.0\.1|[\w.-]+\.(onrender\.com|lovable\.app|lovableproject\.com|"
+            r"azurewebsites\.net|azurecontainerapps\.io|azurecontainer\.io|azurestaticapps\.net|"
+            r"vercel\.app|netlify\.app))(:\d+)?$"
+        )
 
     @property
     def resolved_zarc_data_dir(self) -> Path:

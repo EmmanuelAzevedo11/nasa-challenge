@@ -1,6 +1,6 @@
-# Integração local com FastAPI
+# Integração com FastAPI
 
-Inicie o backend na pasta `backend` com `.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000`. Na pasta `frontend`, defina `VITE_API_BASE_URL=http://127.0.0.1:8000` em `.env.local` e execute `npm run dev -- --host 127.0.0.1 --port 5173`. A origem `http://127.0.0.1:5173` está na configuração CORS padrão do backend.
+A URL padrão da API no frontend aponta para `https://nasa-challenge-nvrf.onrender.com` (ou pode ser sobrescrita via `VITE_API_BASE_URL` em `.env` / `.env.local`). Para desenvolvimento local, inicie o backend na pasta `backend` com `.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000` e execute `npm run dev -- --host 127.0.0.1 --port 5173`.
 
 A busca por município usa pontos internos derivados da [malha de municípios do IBGE](https://servicodados.ibge.gov.br/api/docs/malhas?versao=4) já usada pelo backend. Para escolher a localização exata, use o mapa ou informe latitude e longitude. Uma instalação pode configurar `VITE_GEOCODING_URL` para buscas de endereço em um serviço compatível com Nominatim.
 
