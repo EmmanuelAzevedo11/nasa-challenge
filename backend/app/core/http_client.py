@@ -9,7 +9,7 @@ import httpx
 from app.core.cache import TTLCache
 
 logger = logging.getLogger(__name__)
-TRANSIENT_STATUS = {408, 500, 502, 503, 504}
+TRANSIENT_STATUS = {408, 429, 500, 502, 503, 504}
 
 
 class ProviderError(Exception):

@@ -95,4 +95,76 @@ describe("FastAPI client integration", () => {
     expect(results[0]?.name).toBe("São Paulo, SP");
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it("falls back to direct Open-Meteo when backend returns provider_error for forecast and risks", async () => {
+    const openMeteoPayload = {
+      current: {
+        time: "2026-11-15T17:15",
+        temperature_2m: 23.2,
+        relative_humidity_2m: 83,
+        precipitation: 0.6,
+        wind_speed_10m: 2.5,
+        wind_gusts_10m: 23.4,
+        soil_moisture_0_to_1cm: 0.42,
+        soil_moisture_1_to_3cm: 0.42,
+        soil_moisture_3_to_9cm: 0.42,
+      },
+      daily: {
+        time: [
+          "2026-11-15",
+          "2026-11-16",
+          "2026-11-17",
+          "2026-11-18",
+          "2026-11-19",
+          "2026-11-20",
+          "2026-11-21",
+        ],
+        temperature_2m_min: [18.1, 18.8, 18.0, 16.9, 19.8, 20.4, 20.8],
+        temperature_2m_max: [36.5, 25.6, 27.6, 29.0, 29.8, 29.0, 30.3],
+        temperature_2m_mean: [21.3, 21.2, 22.0, 22.8, 24.2, 24.0, 23.3],
+        relative_humidity_2m_mean: [89, 87, 80, 82, 85, 88, 92],
+        precipitation_sum: [27.8, 3.5, 0.0, 0.4, 1.5, 3.3, 6.0],
+        precipitation_probability_max: [97, 87, 56, 74, 53, 62, 61],
+        wind_speed_10m_max: [17.4, 20.9, 17.2, 9.3, 11.4, 13.8, 10.3],
+        wind_gusts_10m_max: [37.4, 43.2, 35.6, 20.5, 30.6, 31.7, 28.4],
+        et0_fao_evapotranspiration: [3.64, 3.98, 4.69, 5.46, 4.74, 4.35, 4.51],
+      },
+    };
+
+    fetchMock
+      .mockResolvedValueOnce(
+        Response.json({
+          status: "provider_error",
+          source: "Open-Meteo",
+          current: { reference_time: null },
+          daily: [],
+        }),
+      )
+      .mockResolvedValueOnce(Response.json(openMeteoPayload))
+      .mockResolvedValueOnce(
+        Response.json({
+          status: "provider_error",
+          period_start: null,
+          period_end: null,
+          indicators: [],
+        }),
+      );
+
+    const forecast = await api.forecast(place);
+    expect(forecast).toHaveLength(7);
+    expect(forecast[0]).toMatchObject({
+      date: "2026-11-15",
+      temperature: 21.3,
+      precipitation: 27.8,
+      rain_probability: 97,
+    });
+
+    const risks = await api.risks(place, "sugarcane");
+    expect(risks).toHaveLength(5);
+    const heat = risks.find((r) => r.id === "heat");
+    const deficit = risks.find((r) => r.id === "water_deficit");
+    expect(heat?.level).toBe("Alto");
+    expect(deficit?.level).toBe("Baixo");
+    expect(deficit?.period).toBe("15/11/2026 a 21/11/2026");
+  });
 });

@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     frontend_origins: str = "https://nasa-challenge-nvrf.onrender.com,http://localhost:5173,http://127.0.0.1:5173"
     nasa_power_base_url: HttpUrl = HttpUrl("https://power.larc.nasa.gov")
     open_meteo_base_url: HttpUrl = HttpUrl("https://api.open-meteo.com")
+    open_meteo_fallback_base_url: HttpUrl = HttpUrl("https://historical-forecast-api.open-meteo.com")
     gemini_api_key: SecretStr | None = None
     gemini_model: str = "gemini-3.1-flash-lite"
     gemini_max_requests_per_minute: int = Field(8, ge=1, le=120)

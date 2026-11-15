@@ -35,6 +35,7 @@ export type HistoryResponse = {
 };
 
 export type ForecastResponse = {
+  status?: Status;
   source: string;
   current: { reference_time: string | null };
   daily: (DailyValues & {
@@ -44,7 +45,9 @@ export type ForecastResponse = {
 };
 
 export type SummaryResponse = {
+  status?: Status;
   weather: {
+    status?: Status;
     reference_time: string | null;
     temperature: Measurement;
     precipitation: Measurement;
@@ -94,6 +97,7 @@ const riskLevels = {
 } as const;
 
 export type RisksResponse = {
+  status?: Status;
   period_start: string | null;
   period_end: string | null;
   indicators: {
@@ -105,6 +109,245 @@ export type RisksResponse = {
     criteria_url?: string | null;
   }[];
 };
+
+export type OpenMeteoRawPayload = {
+  current?: {
+    time?: string;
+    temperature_2m?: number | null;
+    relative_humidity_2m?: number | null;
+    precipitation?: number | null;
+    wind_speed_10m?: number | null;
+    wind_gusts_10m?: number | null;
+    soil_moisture_0_to_1cm?: number | null;
+    soil_moisture_1_to_3cm?: number | null;
+    soil_moisture_3_to_9cm?: number | null;
+  };
+  daily?: {
+    time?: string[];
+    temperature_2m_min?: (number | null)[];
+    temperature_2m_max?: (number | null)[];
+    temperature_2m_mean?: (number | null)[];
+    relative_humidity_2m_mean?: (number | null)[];
+    precipitation_sum?: (number | null)[];
+    precipitation_probability_max?: (number | null)[];
+    wind_speed_10m_max?: (number | null)[];
+    wind_gusts_10m_max?: (number | null)[];
+    et0_fao_evapotranspiration?: (number | null)[];
+  };
+};
+
+const FROST_URL = "https://avisos.inmet.gov.br/56121";
+const INMET_URL =
+  "https://www.gov.br/mdr/pt-br/centrais-de-conteudo/publicacoes/protecao-e-defesa-civil-sedec/guiapraticodesastres.pdf";
+const OPEN_METEO_DOCS_URL = "https://open-meteo.com/en/docs";
+const HEAT_CRITERIA: Record<string, [number, string]> = {
+  soybean: [
+    40,
+    "https://www.infoteca.cnptia.embrapa.br/infoteca/bitstream/doc/1123928/1/SP-17-2020-online-1.pdf",
+  ],
+  corn: [
+    35,
+    "https://www.infoteca.cnptia.embrapa.br/infoteca/bitstream/doc/748759/1/Milho-Plantio.pdf",
+  ],
+  sugarcane: [
+    35,
+    "https://portal.inmet.gov.br/uploads/publicacoesDigitais/agrometeorologia_dos_cultivos.pdf#page=122",
+  ],
+};
+
+function normalizeReferenceTime(time?: string): string | null {
+  if (!time) return null;
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(time) ? `${time}:00-03:00` : time;
+}
+
+const finiteNumber = (v: number | null | undefined): number | null =>
+  typeof v === "number" && Number.isFinite(v) ? v : null;
+
+export function openMeteoToForecast(raw: OpenMeteoRawPayload): ForecastResponse {
+  const dates = Array.isArray(raw.daily?.time) ? raw.daily.time : [];
+  return {
+    status: dates.length ? "available" : "insufficient_data",
+    source: "Open-Meteo",
+    current: { reference_time: normalizeReferenceTime(raw.current?.time) },
+    daily: dates.map((date, i) => ({
+      date,
+      temperature: finiteNumber(raw.daily?.temperature_2m_mean?.[i]),
+      precipitation: finiteNumber(raw.daily?.precipitation_sum?.[i]),
+      relative_humidity: finiteNumber(raw.daily?.relative_humidity_2m_mean?.[i]),
+      wind_speed_max: finiteNumber(raw.daily?.wind_speed_10m_max?.[i]),
+      precipitation_probability_max: finiteNumber(raw.daily?.precipitation_probability_max?.[i]),
+    })),
+  };
+}
+
+export function openMeteoToSummary(raw: OpenMeteoRawPayload): SummaryResponse {
+  const reference_time = normalizeReferenceTime(raw.current?.time);
+  const metric = (val: number | null | undefined, unit: string): Measurement => {
+    const value = finiteNumber(val);
+    return {
+      value,
+      unit,
+      source: "Open-Meteo",
+      reference_time,
+      status: value !== null ? "available" : "insufficient_data",
+    };
+  };
+  return {
+    status: reference_time ? "available" : "insufficient_data",
+    weather: {
+      status: reference_time ? "available" : "insufficient_data",
+      reference_time,
+      temperature: metric(raw.current?.temperature_2m, "°C"),
+      precipitation: metric(raw.current?.precipitation, "mm"),
+      relative_humidity: metric(raw.current?.relative_humidity_2m, "%"),
+      wind_speed: metric(raw.current?.wind_speed_10m, "km/h"),
+      soil_moisture: [
+        metric(raw.current?.soil_moisture_0_to_1cm, "m³/m³"),
+        metric(raw.current?.soil_moisture_1_to_3cm, "m³/m³"),
+        metric(raw.current?.soil_moisture_3_to_9cm, "m³/m³"),
+      ],
+    },
+  };
+}
+
+export function openMeteoToRisks(
+  raw: OpenMeteoRawPayload,
+  cropId?: string,
+  requestedDays = 7,
+): RisksResponse {
+  const dates = Array.isArray(raw.daily?.time) ? raw.daily.time : [];
+  const days = dates.map((date, i) => ({
+    date,
+    temperature_min: finiteNumber(raw.daily?.temperature_2m_min?.[i]),
+    temperature_max: finiteNumber(raw.daily?.temperature_2m_max?.[i]),
+    precipitation: finiteNumber(raw.daily?.precipitation_sum?.[i]),
+    wind_gusts_max: finiteNumber(raw.daily?.wind_gusts_10m_max?.[i]),
+    reference_evapotranspiration: finiteNumber(raw.daily?.et0_fao_evapotranspiration?.[i]),
+  }));
+
+  type LevelKey = keyof typeof riskLevels;
+
+  function thresholdIndicator(
+    type: keyof typeof riskLabels,
+    field: "temperature_min" | "temperature_max" | "precipitation" | "wind_gusts_max",
+    mode: "min" | "max",
+    classify: (val: number) => LevelKey,
+    criterion: string,
+    criteria_url: string | null,
+  ) {
+    const samples = days
+      .map((d) => ({ val: d[field], date: d.date }))
+      .filter((s): s is { val: number; date: string } => s.val !== null);
+    let picked: { val: number; date: string } | null = null;
+    for (const sample of samples) {
+      if (
+        !picked ||
+        (mode === "min" ? sample.val < picked.val : sample.val > picked.val)
+      ) {
+        picked = sample;
+      }
+    }
+    let level: LevelKey = picked !== null ? classify(picked.val) : "insufficient_data";
+    if (level === "low" && samples.length < requestedDays) {
+      level = "insufficient_data";
+    }
+    const justification =
+      level !== "insufficient_data"
+        ? `Indicador calculado com ${samples.length} de ${requestedDays} dias. ${criterion}`
+        : `Evidência insuficiente no período analisado. ${criterion}`;
+    return {
+      type,
+      level,
+      justification,
+      reference_date: picked?.date ?? null,
+      source: "Open-Meteo",
+      criteria_url,
+    };
+  }
+
+  const heatPair = cropId ? HEAT_CRITERIA[cropId] : undefined;
+  const heatLimit = heatPair?.[0] ?? null;
+  const heatUrl = heatPair?.[1] ?? null;
+
+  const soil3to9 = finiteNumber(raw.current?.soil_moisture_3_to_9cm);
+  const rainSamples = days
+    .map((d) => d.precipitation)
+    .filter((v): v is number => v !== null);
+  const et0Samples = days
+    .map((d) => d.reference_evapotranspiration)
+    .filter((v): v is number => v !== null);
+  const complete = rainSamples.length === requestedDays && et0Samples.length === requestedDays;
+  const balance = complete
+    ? rainSamples.reduce((a, b) => a + b, 0) - et0Samples.reduce((a, b) => a + b, 0)
+    : null;
+
+  let waterLevel: LevelKey = "insufficient_data";
+  let waterJustification =
+    "A triagem requer pelo menos cinco dias completos de chuva e ET₀, além de umidade estimada do solo.";
+  if (balance !== null && requestedDays >= 5 && soil3to9 !== null) {
+    if (balance < 0) {
+      waterLevel = "moderate";
+      waterJustification =
+        "A chuva prevista é inferior à evapotranspiração de referência no período.";
+    } else {
+      waterLevel = "low";
+      waterJustification =
+        "A chuva acumulada prevista iguala ou supera a evapotranspiração de referência no período.";
+    }
+  }
+
+  const indicators = [
+    thresholdIndicator(
+      "frost",
+      "temperature_min",
+      "min",
+      (t) => (t <= 0 ? "high" : t <= 3 ? "moderate" : "low"),
+      "A triagem sinaliza mínimas do ar até 3 °C e dá destaque a valores até 0 °C.",
+      FROST_URL,
+    ),
+    thresholdIndicator(
+      "heat",
+      "temperature_max",
+      "max",
+      (t) => (heatLimit === null ? "insufficient_data" : t > heatLimit ? "high" : "low"),
+      heatLimit !== null
+        ? `A triagem sinaliza máxima diária prevista acima de ${heatLimit} °C para a cultura selecionada.`
+        : "Há critérios de calor disponíveis para soja, milho e cana-de-açúcar.",
+      heatUrl,
+    ),
+    thresholdIndicator(
+      "heavy_rain",
+      "precipitation",
+      "max",
+      (v) => (v > 100 ? "high" : v >= 50 ? "moderate" : "low"),
+      "Triagem pelo maior acumulado diário a partir de 50 mm, com destaque acima de 100 mm.",
+      INMET_URL,
+    ),
+    thresholdIndicator(
+      "strong_wind",
+      "wind_gusts_max",
+      "max",
+      (v) => (v > 100 ? "high" : v >= 60 ? "moderate" : "low"),
+      "Triagem pela maior rajada diária a partir de 60 km/h, com destaque acima de 100 km/h.",
+      INMET_URL,
+    ),
+    {
+      type: "water_deficit" as const,
+      level: waterLevel,
+      justification: waterJustification,
+      reference_date: null,
+      source: "Open-Meteo",
+      criteria_url: OPEN_METEO_DOCS_URL,
+    },
+  ];
+
+  return {
+    status: dates.length ? "available" : "insufficient_data",
+    period_start: dates[0] ?? null,
+    period_end: dates[dates.length - 1] ?? null,
+    indicators,
+  };
+}
 
 const classifications = {
   potentially_favorable: "Condições potencialmente favoráveis",
